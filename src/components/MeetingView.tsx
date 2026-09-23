@@ -92,9 +92,21 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
   return (
     <article className="flex flex-col gap-6">
       <header className="flex flex-col gap-4">
-        <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance sm:text-3xl">
-          {meeting.title}
-        </h1>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance sm:text-3xl">
+            {meeting.title}
+          </h1>
+          {minutes && (
+            <a
+              href={`/api/meetings/${meeting.id}/docx`}
+              download
+              className={`${buttonStyles.secondary} ${buttonStyles.sm} w-full shrink-0 sm:w-auto`}
+            >
+              <Icon name="download" className="size-4" />
+              下載 Word
+            </a>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <MetaChip icon="calendar">{formatDate(meeting.meetingDate)}</MetaChip>
           {meeting.durationSeconds != null && (
