@@ -79,6 +79,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
   const { minutes } = meeting;
   const { segments, text } = meeting.transcript;
   const speakers = [...new Set(segments.map((s) => s.speaker))];
+  const hasTranscript = segments.length > 0 || text.trim().length > 0;
   const visibleSegments = expanded ? segments : segments.slice(0, TRANSCRIPT_PREVIEW);
 
   // 點逐字稿時間戳跳到錄音對應位置
@@ -96,15 +97,31 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
           <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance sm:text-3xl">
             {meeting.title}
           </h1>
-          {minutes && (
-            <a
-              href={`/api/meetings/${meeting.id}/docx`}
-              download
-              className={`${buttonStyles.secondary} ${buttonStyles.sm} w-full shrink-0 sm:w-auto`}
-            >
-              <Icon name="download" className="size-4" />
-              下載 Word
-            </a>
+          {(minutes || hasTranscript) && (
+            <div className="flex shrink-0 gap-2">
+              {minutes && (
+                <a
+                  href={`/api/meetings/${meeting.id}/docx`}
+                  download
+                  title="下載 Word 檔：摘要、重點、待辦事項"
+                  className={`${buttonStyles.secondary} ${buttonStyles.sm} flex-1 sm:flex-none`}
+                >
+                  <Icon name="download" className="size-4" />
+                  下載會議記錄
+                </a>
+              )}
+              {hasTranscript && (
+                <a
+                  href={`/api/meetings/${meeting.id}/docx?content=transcript`}
+                  download
+                  title="下載 Word 檔：完整逐字稿"
+                  className={`${buttonStyles.secondary} ${buttonStyles.sm} flex-1 sm:flex-none`}
+                >
+                  <Icon name="download" className="size-4" />
+                  下載逐字稿
+                </a>
+              )}
+            </div>
           )}
         </div>
         <div className="flex flex-wrap gap-2">
