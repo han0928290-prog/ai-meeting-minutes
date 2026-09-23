@@ -3,13 +3,23 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import type { TranscribeResponse } from "@/app/api/transcribe/route";
 import MeetingView from "@/components/MeetingView";
+import ProcessingStatus from "@/components/ProcessingStatus";
 import { Icon, buttonStyles, type IconName } from "@/components/ui";
+import type { MeetingDetail } from "@/lib/meeting-dto";
+import {
+  ApiError,
+  createMeeting,
+  fetchMeeting,
+  processMeeting,
+  uploadRecording,
+  type PipelineStage,
+} from "@/lib/meeting-pipeline";
+import { AUDIO_EXTENSIONS, MAX_AUDIO_SECONDS, MAX_UPLOAD_BYTES, fileExtension } from "@/lib/upload-config";
 
-const MAX_FILE_MB = 25;
-const ACCEPT = ".flac,.mp3,.mp4,.mpeg,.mpga,.m4a,.ogg,.wav,.webm,audio/*";
-const STEPS = ["上傳錄音檔", "語音轉文字、辨識講者", "AI 整理摘要與待辦", "保存到歷史紀錄"];
+const ACCEPT = `${AUDIO_EXTENSIONS.map((e) => `.${e}`).join(",")},audio/*`;
+const MAX_FILE_MB = MAX_UPLOAD_BYTES / 1024 / 1024;
+const MAX_HOURS = MAX_AUDIO_SECONDS / 3600;
 const DELIVERABLES: { icon: IconName; title: string; desc: string }[] = [
   { icon: "users", title: "分講者的逐字稿", desc: "附時間軸，點一下就能從那裡回放" },
   { icon: "sparkles", title: "摘要與重點", desc: "三十秒掌握整場會議" },
@@ -21,38 +31,41 @@ function formatSize(bytes: number) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 }
 
-// 處理中顯示實際經過秒數（API 是單一請求，無法得知真實進度，所以不做假進度條）
-function useElapsedSeconds(running: boolean) {
-  const [seconds, setSeconds] = useState(0);
+// 處理中離開頁面前提醒（已完成的段落會保留，但要回到歷史紀錄手動續跑）
+function useLeaveWarning(active: boolean) {
   useEffect(() => {
-    if (!running) return;
-    const start = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => {
-      clearInterval(timer);
-      setSeconds(0);
-    };
-  }, [running]);
-  return seconds;
+    if (!active) return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [active]);
 }
 
-export default function AudioUploader() {
+export default function AudioUploader({ userId }: { userId: string }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<PipelineStage | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<TranscribeResponse | null>(null);
-  const elapsed = useElapsedSeconds(loading);
+  const [result, setResult] = useState<MeetingDetail | null>(null);
+  // 會議紀錄已建立後才失敗：重試時從這筆紀錄續跑，不用重新上傳
+  const [meetingId, setMeetingId] = useState<string | null>(null);
+  const loading = stage !== null;
+  useLeaveWarning(loading);
 
   function selectFile(selected: File | null) {
     setResult(null);
     setError(null);
-    if (selected && selected.size > MAX_FILE_MB * 1024 * 1024) {
-      setError(`音檔超過 ${MAX_FILE_MB}MB 上限`);
+    setMeetingId(null);
+    if (!selected) return setFile(null);
+    if (!AUDIO_EXTENSIONS.includes(fileExtension(selected.name))) {
       setFile(null);
-      return;
+      return setError(`不支援的格式，請上傳 ${AUDIO_EXTENSIONS.join("、").toUpperCase()} 檔`);
+    }
+    if (selected.size > MAX_UPLOAD_BYTES) {
+      setFile(null);
+      return setError(`音檔超過 ${MAX_FILE_MB}MB 上限`);
     }
     setFile(selected);
   }
@@ -60,6 +73,7 @@ export default function AudioUploader() {
   function clearFile() {
     setFile(null);
     setError(null);
+    setMeetingId(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -75,30 +89,52 @@ export default function AudioUploader() {
     selectFile(e.dataTransfer.files?.[0] ?? null);
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function run() {
     if (!file) return;
-
-    setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/transcribe", { method: "POST", body: formData });
-      if (res.status === 401) {
+      let id = meetingId;
+      let progress: { totalChunks: number; doneChunks: number[] };
+
+      if (id) {
+        // 續跑：以伺服器上的實際進度為準
+        setStage({ kind: "transcribing", done: 0, total: 0 });
+        const current = await fetchMeeting(id);
+        if (!current.progress) {
+          setResult(current);
+          return;
+        }
+        progress = current.progress;
+      } else {
+        setStage({ kind: "uploading", percent: 0 });
+        const blobUrl = await uploadRecording(file, userId, (percent) =>
+          setStage({ kind: "uploading", percent }),
+        );
+        setStage({ kind: "preparing" });
+        const created = await createMeeting(blobUrl, file.name);
+        id = created.meetingId;
+        setMeetingId(id);
+        progress = { totalChunks: created.totalChunks, doneChunks: [] };
+      }
+
+      setResult(await processMeeting(id, progress, setStage));
+      setMeetingId(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
         router.replace("/login");
         return;
       }
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "上傳失敗");
-      setResult(data as TranscribeResponse);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "上傳失敗");
+      setError(err instanceof Error ? err.message : "處理失敗，請稍後再試");
     } finally {
-      setLoading(false);
+      setStage(null);
     }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    void run();
   }
 
   if (result) {
@@ -107,14 +143,7 @@ export default function AudioUploader() {
         <div className="flex flex-col gap-4 rounded-2xl border border-success/25 bg-success-soft p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
           <div className="flex items-start gap-3">
             <Icon name="checkCircle" className="mt-0.5 size-5 shrink-0 text-success" />
-            <div className="flex flex-col gap-1 text-sm">
-              <p className="font-medium">會議記錄完成，已保存到歷史紀錄</p>
-              {result.warnings.map((w) => (
-                <p key={w} className="text-warning">
-                  {w}
-                </p>
-              ))}
-            </div>
+            <p className="text-sm font-medium">會議記錄完成，已保存到歷史紀錄</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <button
@@ -125,13 +154,13 @@ export default function AudioUploader() {
               <Icon name="plus" className="size-4" />
               再上傳一場
             </button>
-            <Link href={`/meetings/${result.meeting.id}`} className={`${buttonStyles.dark} ${buttonStyles.sm} flex-1 sm:flex-none`}>
+            <Link href={`/meetings/${result.id}`} className={`${buttonStyles.dark} ${buttonStyles.sm} flex-1 sm:flex-none`}>
               開啟紀錄
               <Icon name="arrowRight" className="size-4" />
             </Link>
           </div>
         </div>
-        <MeetingView meeting={result.meeting} />
+        <MeetingView meeting={result} />
       </div>
     );
   }
@@ -142,8 +171,8 @@ export default function AudioUploader() {
         onSubmit={handleSubmit}
         className="flex flex-col gap-5 rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-6"
       >
-        {loading ? (
-          <ProcessingPanel fileName={file?.name ?? ""} elapsed={elapsed} />
+        {stage ? (
+          <ProcessingStatus stage={stage} title={file?.name ?? ""} />
         ) : (
           <label
             onDragOver={(e) => {
@@ -173,7 +202,9 @@ export default function AudioUploader() {
                 <span className="hidden sm:inline">拖曳錄音檔到這裡，或</span>
                 <span className="text-accent underline decoration-accent/30 underline-offset-4">選擇檔案</span>
               </span>
-              <span className="text-sm text-muted">MP3、M4A、WAV、WEBM 等格式，單檔上限 {MAX_FILE_MB}MB</span>
+              <span className="text-sm text-muted">
+                MP3、M4A、WAV、WEBM 等格式，最長 {MAX_HOURS} 小時、{MAX_FILE_MB}MB 以內
+              </span>
             </span>
           </label>
         )}
@@ -199,10 +230,13 @@ export default function AudioUploader() {
         )}
 
         {error && (
-          <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-soft px-3.5 py-3 text-sm text-danger">
-            <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
-            {error}
-          </p>
+          <div role="alert" className="flex flex-col gap-2 rounded-xl bg-danger-soft px-3.5 py-3 text-sm text-danger">
+            <p className="flex items-start gap-2">
+              <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
+              {error}
+            </p>
+            {meetingId && <p className="pl-6 text-xs">已完成的部分都保留著，按「重試」會從中斷的地方繼續。</p>}
+          </div>
         )}
 
         <button
@@ -210,7 +244,7 @@ export default function AudioUploader() {
           disabled={!file || loading}
           className={`${buttonStyles.primary} ${buttonStyles.lg} w-full sm:w-auto sm:self-end`}
         >
-          {loading ? "處理中…" : "產生會議記錄"}
+          {loading ? "處理中…" : meetingId ? "重試" : "產生會議記錄"}
           {!loading && <Icon name="arrowRight" className="size-4" />}
         </button>
       </form>
@@ -231,50 +265,6 @@ export default function AudioUploader() {
           ))}
         </ul>
       </aside>
-    </div>
-  );
-}
-
-function ProcessingPanel({ fileName, elapsed }: { fileName: string; elapsed: number }) {
-  // 依經過時間粗略標示目前大概在哪一步（僅供參考，不代表真實進度）
-  const activeStep = elapsed < 3 ? 0 : 1;
-
-  return (
-    <div aria-live="polite" className="flex flex-col items-center gap-6 rounded-2xl bg-surface-2/50 px-4 py-10 text-center sm:py-12">
-      <div className="flex h-12 items-center gap-1.5" aria-hidden="true">
-        {Array.from({ length: 9 }).map((_, i) => (
-          <span
-            key={i}
-            className="wave-bar h-full w-1.5 rounded-full bg-accent"
-            style={{ animationDelay: `${i * 0.11}s`, opacity: 0.4 + (i % 3) * 0.2 }}
-          />
-        ))}
-      </div>
-      <div className="flex flex-col gap-1">
-        <p className="text-base font-medium">正在產生會議記錄</p>
-        <p className="max-w-full truncate text-sm text-muted">{fileName}</p>
-      </div>
-      <ol className="flex w-full max-w-xs flex-col gap-2.5 text-left text-sm">
-        {STEPS.map((step, i) => (
-          <li key={step} className={`flex items-center gap-2.5 ${i > activeStep ? "text-muted" : ""}`}>
-            {i < activeStep ? (
-              <Icon name="checkCircle" className="size-4 text-success" />
-            ) : i === activeStep ? (
-              <span className="grid size-4 place-items-center">
-                <span className="size-2 animate-pulse rounded-full bg-accent" />
-              </span>
-            ) : (
-              <span className="grid size-4 place-items-center">
-                <span className="size-1.5 rounded-full bg-line-strong" />
-              </span>
-            )}
-            {step}
-          </li>
-        ))}
-      </ol>
-      <p className="text-xs text-muted">
-        已經過 {elapsed} 秒・長錄音可能需要幾分鐘，請不要關閉頁面
-      </p>
     </div>
   );
 }

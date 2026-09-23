@@ -33,6 +33,8 @@ export type MeetingDetail = {
   transcript: { text: string; segments: TranscriptSegment[] };
   minutes: MeetingMinutes | null;
   errorMessage: string | null;
+  // 分段轉錄尚未完成時才有值，前端用來顯示進度與續跑
+  progress: { totalChunks: number; doneChunks: number[] } | null;
 };
 
 type MeetingDoc = Meeting & { _id: Types.ObjectId };
@@ -89,5 +91,11 @@ export function toMeetingDetail(doc: MeetingDoc): MeetingDetail {
           }
         : null,
     errorMessage: doc.errorMessage ?? null,
+    progress: doc.processing
+      ? {
+          totalChunks: doc.processing.chunks.length,
+          doneChunks: doc.processing.chunks.flatMap((c, i) => (c.status === "done" ? [i] : [])),
+        }
+      : null,
   };
 }

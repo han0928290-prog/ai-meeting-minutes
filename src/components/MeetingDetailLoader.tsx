@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import MeetingView from "@/components/MeetingView";
+import ProcessingStatus from "@/components/ProcessingStatus";
+import { ApiError, processMeeting, type PipelineStage } from "@/lib/meeting-pipeline";
 import { Icon, buttonStyles } from "@/components/ui";
 import type { MeetingDetail } from "@/lib/meeting-dto";
 
@@ -69,7 +71,63 @@ export default function MeetingDetailLoader({ id }: { id: string }) {
         </div>
       )}
       {!error && !meeting && <Skeleton />}
-      {meeting && <MeetingView meeting={meeting} />}
+      {meeting?.progress ? (
+        <ResumePanel meeting={meeting} onDone={setMeeting} />
+      ) : (
+        meeting && <MeetingView meeting={meeting} />
+      )}
+    </div>
+  );
+}
+
+// 處理到一半中斷的會議（例如上傳頁被關掉）：從已完成的段落接著做
+function ResumePanel({ meeting, onDone }: { meeting: MeetingDetail; onDone: (m: MeetingDetail) => void }) {
+  const router = useRouter();
+  const [stage, setStage] = useState<PipelineStage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const progress = meeting.progress!;
+
+  async function resume() {
+    setError(null);
+    try {
+      onDone(await processMeeting(meeting.id, progress, setStage));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return router.replace("/login");
+      setError(err instanceof Error ? err.message : "處理失敗，請稍後再試");
+    } finally {
+      setStage(null);
+    }
+  }
+
+  if (stage) {
+    return (
+      <div className="rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-6">
+        <ProcessingStatus stage={stage} title={meeting.fileName ?? meeting.title} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-5 rounded-3xl border border-dashed border-line-strong px-6 py-14 text-center">
+      <span className="grid size-12 place-items-center rounded-2xl bg-warning-soft text-warning">
+        <Icon name="clock" className="size-6" />
+      </span>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-base font-medium">這場會議還沒處理完成</p>
+        <p className="text-sm text-muted">
+          {meeting.fileName ?? meeting.title}・已完成 {progress.doneChunks.length} / {progress.totalChunks} 段
+        </p>
+      </div>
+      {error && (
+        <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-soft px-3.5 py-3 text-left text-sm text-danger">
+          <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
+          {error}
+        </p>
+      )}
+      <button type="button" onClick={() => void resume()} className={`${buttonStyles.primary} ${buttonStyles.md}`}>
+        繼續處理
+        <Icon name="arrowRight" className="size-4" />
+      </button>
     </div>
   );
 }

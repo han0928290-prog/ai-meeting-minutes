@@ -5,7 +5,7 @@ import { verifySession } from "@/lib/dal";
 export const metadata = { title: "新增會議｜AI 會議記錄" };
 
 export default async function NewMeetingPage() {
-  await verifySession();
+  const { userId } = await verifySession();
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6 sm:py-12">
       <header className="flex max-w-2xl flex-col gap-3">
@@ -15,7 +15,7 @@ export default async function NewMeetingPage() {
           自動產生分好講者的逐字稿，並整理出摘要、重點與待辦事項，完成後會保存到你的歷史紀錄。
         </p>
       </header>
-      <AudioUploader />
+      <AudioUploader userId={userId} />
     </main>
   );
 }

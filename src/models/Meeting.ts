@@ -44,6 +44,38 @@ const AiResultSchema = new Schema(
   { _id: false },
 );
 
+// 長錄音切成的一段：各段分開送語音辨識，全部完成後再合併
+const ChunkSchema = new Schema(
+  {
+    startMs: { type: Number, required: true },
+    endMs: { type: Number, required: true },
+    blobUrl: { type: String, required: true }, // 這段轉好的 mp3，finalize 後刪除
+    status: { type: String, enum: ["pending", "done"], default: "pending" },
+    // 已加上整段時間偏移；講者標籤尚未統一（見 chunked-transcription.ts）
+    segments: { type: [TranscriptSegmentSchema], default: undefined },
+    error: String,
+  },
+  { _id: false },
+);
+
+// 第一段辨識出的講者聲音樣本，後續各段用來對應成同一個講者
+const SpeakerRefSchema = new Schema(
+  {
+    name: { type: String, required: true }, // 送給 API 的 known_speaker_names
+    label: { type: String, required: true }, // 最終顯示的講者標籤（A、B…）
+    dataUrl: { type: String, required: true },
+  },
+  { _id: false },
+);
+
+const ProcessingSchema = new Schema(
+  {
+    chunks: { type: [ChunkSchema], default: [] },
+    speakerRefs: { type: [SpeakerRefSchema], default: undefined },
+  },
+  { _id: false },
+);
+
 const MeetingSchema = new Schema(
   {
     // 擁有者：所有查詢都必須帶上 userId 條件，確保每個人只看得到自己的會議
@@ -78,6 +110,9 @@ const MeetingSchema = new Schema(
     },
 
     ai: { type: AiResultSchema, default: undefined },
+
+    // 長錄音分段轉錄的暫存進度；全部完成（finalize）後會移除
+    processing: { type: ProcessingSchema, default: undefined },
 
     status: {
       type: String,

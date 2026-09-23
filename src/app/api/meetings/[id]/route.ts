@@ -18,7 +18,9 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/meetings/[i
 
   await connectDB();
   // 條件同時帶 userId：別人的會議與不存在的會議一律回 404，不透露是否存在
-  const doc = await MeetingModel.findOne({ _id: id, userId }).lean();
+  const doc = await MeetingModel.findOne({ _id: id, userId })
+    .select("-processing.speakerRefs -processing.chunks.segments")
+    .lean();
   if (!doc) {
     return Response.json({ error: "找不到這筆會議紀錄" }, { status: 404 });
   }

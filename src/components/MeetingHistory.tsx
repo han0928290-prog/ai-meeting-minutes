@@ -126,7 +126,10 @@ export default function MeetingHistory() {
                     </span>
                   )}
                   {!m.hasAudio && <span>無錄音檔</span>}
-                  {m.status !== "completed" && <span className="text-warning">AI 整理未完成</span>}
+                  {(m.status === "transcribing" || m.status === "summarizing") && (
+                    <span className="text-warning">尚未處理完成</span>
+                  )}
+                  {m.status === "transcribed" && <span className="text-warning">AI 整理未完成</span>}
                 </span>
                 {m.summary && (
                   <span className="mt-0.5 line-clamp-2 text-sm leading-relaxed text-muted">{m.summary}</span>

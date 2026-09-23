@@ -1,33 +1,13 @@
 import "server-only";
-import { del, put } from "@vercel/blob";
+import { del } from "@vercel/blob";
+import { AUDIO_MIME_BY_EXT, fileExtension } from "@/lib/upload-config";
 
-// 目前的 Blob store 是 public store（無法存 private）。檔名帶隨機字串難以猜測，
-// 且原始網址只存在資料庫、不回傳前端，播放一律經過 /api/meetings/[id]/audio 檢查擁有者。
-// 之後若改用 private store，只要把這裡改成 "private" 即可。
-export const BLOB_ACCESS: "public" | "private" = "public";
+export { BLOB_ACCESS } from "@/lib/upload-config";
 
-// 瀏覽器有時不帶或只帶 application/octet-stream，改用副檔名判斷，<audio> 才播得了
-const AUDIO_MIME_BY_EXT: Record<string, string> = {
-  flac: "audio/flac",
-  mp3: "audio/mpeg",
-  mpeg: "audio/mpeg",
-  mpga: "audio/mpeg",
-  mp4: "audio/mp4",
-  m4a: "audio/mp4",
-  ogg: "audio/ogg",
-  wav: "audio/wav",
-  webm: "audio/webm",
-};
-
-export async function uploadMeetingAudio(userId: string, file: File) {
-  const ext = file.name.split(".").pop()?.toLowerCase() || "bin";
-  const contentType =
-    file.type && file.type !== "application/octet-stream" ? file.type : AUDIO_MIME_BY_EXT[ext];
-  return put(`meetings/${userId}/${Date.now()}.${ext}`, file, {
-    access: BLOB_ACCESS,
-    addRandomSuffix: true,
-    contentType,
-  });
+/** 決定錄音檔的 content-type：優先用上傳時帶的，沒有或無意義時改用副檔名判斷 */
+export function audioContentType(pathname: string, reported?: string | null) {
+  if (reported && reported !== "application/octet-stream") return reported;
+  return AUDIO_MIME_BY_EXT[fileExtension(pathname)] ?? "application/octet-stream";
 }
 
 export async function deleteBlobQuietly(url: string) {
