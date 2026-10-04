@@ -44,6 +44,28 @@ const AiResultSchema = new Schema(
   { _id: false },
 );
 
+// 多個錄音檔接成一場會議時，記錄每個檔案在合併後時間軸上的起點
+const RecordingPartSchema = new Schema(
+  {
+    fileName: { type: String, required: true },
+    startMs: { type: Number, required: true, min: 0 },
+    durationSeconds: { type: Number, required: true, min: 0 },
+  },
+  { _id: false },
+);
+
+// 補充資料的一個檔案（存在 Vercel Blob）
+const AttachmentSchema = new Schema(
+  {
+    url: { type: String, required: true },
+    pathname: { type: String, required: true },
+    fileName: { type: String, required: true },
+    size: { type: Number, min: 0 },
+    contentType: { type: String },
+  },
+  { _id: false },
+);
+
 // 長錄音切成的一段：各段分開送語音辨識，全部完成後再合併
 const ChunkSchema = new Schema(
   {
@@ -102,6 +124,12 @@ const MeetingSchema = new Schema(
       size: Number,
       contentType: String,
     },
+
+    // 上傳了多個錄音檔時才有：依上傳順序接成上面的 audio，原始檔不保留
+    recordings: { type: [RecordingPartSchema], default: undefined },
+
+    // 補充資料（簡報、圖片、文件），AI 整理時和逐字稿一起參考。url 同樣不直接給前端
+    attachments: { type: [AttachmentSchema], default: undefined },
 
     // 完整逐字稿：fullText 一定有；segments 在有講者 / 時間軸時才有
     transcript: {

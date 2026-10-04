@@ -1,5 +1,5 @@
 import { isValidObjectId } from "mongoose";
-import { PipelineError, transcribeChunk } from "@/lib/chunked-transcription";
+import { PipelineError, transcribeChunk, unexpectedErrorMessage } from "@/lib/chunked-transcription";
 import { getSessionUserId } from "@/lib/dal";
 
 // 一段最長 20 分鐘的錄音轉錄，通常一兩分鐘內完成
@@ -26,6 +26,6 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/meetings/[
       return Response.json({ error: err.message }, { status: err.status });
     }
     console.error("Chunk transcription failed:", err);
-    return Response.json({ error: "語音轉文字失敗，請稍後再試" }, { status: 500 });
+    return Response.json({ error: unexpectedErrorMessage(`第 ${i + 1} 段語音轉文字`, err) }, { status: 500 });
   }
 }

@@ -12,13 +12,27 @@ import {
   createMeeting,
   fetchMeeting,
   processMeeting,
-  uploadRecording,
+  uploadFiles,
   type PipelineStage,
 } from "@/lib/meeting-pipeline";
-import { AUDIO_EXTENSIONS, MAX_AUDIO_SECONDS, MAX_UPLOAD_BYTES, fileExtension } from "@/lib/upload-config";
+import {
+  ATTACHMENT_EXTENSIONS,
+  ATTACHMENT_KIND_BY_EXT,
+  AUDIO_EXTENSIONS,
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENTS_TOTAL_BYTES,
+  MAX_ATTACHMENT_BYTES,
+  MAX_AUDIO_SECONDS,
+  MAX_RECORDINGS,
+  MAX_UPLOAD_BYTES,
+  fileExtension,
+} from "@/lib/upload-config";
 
 const ACCEPT = `${AUDIO_EXTENSIONS.map((e) => `.${e}`).join(",")},audio/*`;
+const ATTACHMENT_ACCEPT = ATTACHMENT_EXTENSIONS.map((e) => `.${e}`).join(",");
 const MAX_FILE_MB = MAX_UPLOAD_BYTES / 1024 / 1024;
+const MAX_ATTACHMENT_MB = MAX_ATTACHMENT_BYTES / 1024 / 1024;
+const MAX_ATTACHMENTS_TOTAL_MB = MAX_ATTACHMENTS_TOTAL_BYTES / 1024 / 1024;
 const MAX_HOURS = MAX_AUDIO_SECONDS / 3600;
 const DELIVERABLES: { icon: IconName; title: string; desc: string }[] = [
   { icon: "users", title: "分講者的逐字稿", desc: "附時間軸，點一下就能從那裡回放" },
@@ -44,8 +58,13 @@ function useLeaveWarning(active: boolean) {
 export default function AudioUploader({ userId }: { userId: string }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
+  // 依加入順序排列，伺服器會照這個順序把錄音接成同一場會議
+  const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [draggingAttachments, setDraggingAttachments] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [stage, setStage] = useState<PipelineStage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MeetingDetail | null>(null);
@@ -54,43 +73,113 @@ export default function AudioUploader({ userId }: { userId: string }) {
   const loading = stage !== null;
   useLeaveWarning(loading);
 
-  function selectFile(selected: File | null) {
+  // 錄音可以多選、分次加入，接在現有清單後面；不合格的檔案略過並提示，其餘照樣加入
+  function addFiles(selected: File[]) {
     setResult(null);
     setError(null);
+    // 錄音變了就是一場新的會議，不沿用先前失敗的紀錄
     setMeetingId(null);
-    if (!selected) return setFile(null);
-    if (!AUDIO_EXTENSIONS.includes(fileExtension(selected.name))) {
-      setFile(null);
-      return setError(`不支援的格式，請上傳 ${AUDIO_EXTENSIONS.join("、").toUpperCase()} 檔`);
+    const problems: string[] = [];
+    const next = [...files];
+    for (const f of selected) {
+      if (!AUDIO_EXTENSIONS.includes(fileExtension(f.name))) {
+        problems.push(`「${f.name}」格式不支援，請上傳 ${AUDIO_EXTENSIONS.join("、").toUpperCase()} 檔`);
+      } else if (next.length >= MAX_RECORDINGS) {
+        problems.push(`錄音檔最多 ${MAX_RECORDINGS} 個`);
+        break;
+      } else if (next.reduce((sum, a) => sum + a.size, 0) + f.size > MAX_UPLOAD_BYTES) {
+        problems.push(`錄音檔合計不能超過 ${MAX_FILE_MB}MB`);
+        break;
+      } else if (!next.some((a) => a.name === f.name && a.size === f.size)) {
+        next.push(f);
+      }
     }
-    if (selected.size > MAX_UPLOAD_BYTES) {
-      setFile(null);
-      return setError(`音檔超過 ${MAX_FILE_MB}MB 上限`);
-    }
-    setFile(selected);
+    setFiles(next);
+    if (problems.length > 0) setError(problems.join("；"));
+    if (inputRef.current) inputRef.current.value = "";
   }
 
-  function clearFile() {
-    setFile(null);
+  function removeFile(index: number) {
+    setError(null);
+    setMeetingId(null);
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  // 調整錄音順序：offset -1 往前、+1 往後
+  function moveFile(index: number, offset: -1 | 1) {
+    setMeetingId(null);
+    setFiles((prev) => {
+      const next = [...prev];
+      const target = index + offset;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function clearFiles() {
+    setFiles([]);
     setError(null);
     setMeetingId(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  // 補充資料可以多選、分次加入；不合格的檔案略過並提示，其餘照樣加入
+  function addAttachments(selected: File[]) {
+    setAttachmentError(null);
+    // 補充資料變了就是一場新的會議，不沿用先前失敗的紀錄
+    setMeetingId(null);
+    const problems: string[] = [];
+    const next = [...attachments];
+    for (const f of selected) {
+      if (!ATTACHMENT_EXTENSIONS.includes(fileExtension(f.name))) {
+        problems.push(`「${f.name}」格式不支援`);
+      } else if (f.size > MAX_ATTACHMENT_BYTES) {
+        problems.push(`「${f.name}」超過 ${MAX_ATTACHMENT_MB}MB`);
+      } else if (next.length >= MAX_ATTACHMENTS) {
+        problems.push(`最多 ${MAX_ATTACHMENTS} 個檔案`);
+        break;
+      } else if (next.reduce((sum, a) => sum + a.size, 0) + f.size > MAX_ATTACHMENTS_TOTAL_BYTES) {
+        problems.push(`合計不能超過 ${MAX_ATTACHMENTS_TOTAL_MB}MB`);
+        break;
+      } else if (!next.some((a) => a.name === f.name && a.size === f.size)) {
+        next.push(f);
+      }
+    }
+    setAttachments(next);
+    if (problems.length > 0) setAttachmentError(problems.join("；"));
+    if (attachmentInputRef.current) attachmentInputRef.current.value = "";
+  }
+
+  function removeAttachment(index: number) {
+    setAttachmentError(null);
+    setMeetingId(null);
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function handleAttachmentDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDraggingAttachments(false);
+    if (loading) return;
+    addAttachments(Array.from(e.dataTransfer.files ?? []));
+  }
+
   function startOver() {
     setResult(null);
-    clearFile();
+    setAttachments([]);
+    setAttachmentError(null);
+    clearFiles();
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
     if (loading) return;
-    selectFile(e.dataTransfer.files?.[0] ?? null);
+    addFiles(Array.from(e.dataTransfer.files ?? []));
   }
 
   async function run() {
-    if (!file) return;
+    if (files.length === 0) return;
     setError(null);
     setResult(null);
 
@@ -109,11 +198,11 @@ export default function AudioUploader({ userId }: { userId: string }) {
         progress = current.progress;
       } else {
         setStage({ kind: "uploading", percent: 0 });
-        const blobUrl = await uploadRecording(file, userId, (percent) =>
+        const uploaded = await uploadFiles(files, attachments, userId, (percent) =>
           setStage({ kind: "uploading", percent }),
         );
         setStage({ kind: "preparing" });
-        const created = await createMeeting(blobUrl, file.name);
+        const created = await createMeeting(uploaded);
         id = created.meetingId;
         setMeetingId(id);
         progress = { totalChunks: created.totalChunks, doneChunks: [] };
@@ -140,7 +229,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
   if (result) {
     return (
       <div className="flex flex-col gap-8">
-        <div className="flex flex-col gap-4 rounded-2xl border border-success/25 bg-success-soft p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div className="flex flex-col gap-4 rounded-2xl border border-success/25 bg-success-soft p-4 print:hidden sm:flex-row sm:items-center sm:justify-between sm:p-5">
           <div className="flex items-start gap-3">
             <Icon name="checkCircle" className="mt-0.5 size-5 shrink-0 text-success" />
             <p className="text-sm font-medium">會議記錄完成，已保存到歷史紀錄</p>
@@ -172,7 +261,10 @@ export default function AudioUploader({ userId }: { userId: string }) {
         className="flex flex-col gap-5 rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-6"
       >
         {stage ? (
-          <ProcessingStatus stage={stage} title={file?.name ?? ""} />
+          <ProcessingStatus
+            stage={stage}
+            title={files.length > 1 ? `${files[0].name} 等 ${files.length} 個錄音檔` : (files[0]?.name ?? "")}
+          />
         ) : (
           <label
             onDragOver={(e) => {
@@ -190,8 +282,9 @@ export default function AudioUploader({ userId }: { userId: string }) {
             <input
               ref={inputRef}
               type="file"
+              multiple
               accept={ACCEPT}
-              onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => addFiles(Array.from(e.target.files ?? []))}
               className="sr-only"
             />
             <span className="grid size-14 place-items-center rounded-2xl bg-surface text-accent shadow-card transition-transform group-hover:-translate-y-0.5">
@@ -203,30 +296,145 @@ export default function AudioUploader({ userId }: { userId: string }) {
                 <span className="text-accent underline decoration-accent/30 underline-offset-4">選擇檔案</span>
               </span>
               <span className="text-sm text-muted">
-                MP3、M4A、WAV、WEBM 等格式，最長 {MAX_HOURS} 小時、{MAX_FILE_MB}MB 以內
+                MP3、M4A、WAV、WEBM 等格式，合計最長 {MAX_HOURS} 小時、{MAX_FILE_MB}MB 以內
+              </span>
+              <span className="text-sm text-muted">
+                同一場會議錄成好幾個檔？可以一次選多個，會依清單順序接續分析
               </span>
             </span>
           </label>
         )}
 
-        {file && !loading && (
-          <div className="flex items-center gap-3 rounded-2xl border border-line bg-surface-2/60 p-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
-              <Icon name="file" className="size-5" />
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-sm font-medium">{file.name}</span>
-              <span className="text-xs text-muted">{formatSize(file.size)}</span>
-            </span>
-            <button
-              type="button"
-              onClick={clearFile}
-              aria-label="移除檔案"
-              className={`${buttonStyles.ghost} size-9 shrink-0`}
+        {files.length > 0 && !loading && (
+          <ol className="flex flex-col gap-2">
+            {files.map((f, i) => (
+              <li
+                key={`${f.name}-${f.size}`}
+                className="flex items-center gap-3 rounded-2xl border border-line bg-surface-2/60 p-3"
+              >
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
+                  {files.length > 1 ? (
+                    <span className="font-mono text-sm font-semibold tabular-nums">{i + 1}</span>
+                  ) : (
+                    <Icon name="file" className="size-5" />
+                  )}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-sm font-medium">{f.name}</span>
+                  <span className="text-xs text-muted">{formatSize(f.size)}</span>
+                </span>
+                {files.length > 1 && (
+                  <span className="flex shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => moveFile(i, -1)}
+                      disabled={i === 0}
+                      aria-label={`把 ${f.name} 往前移`}
+                      className={`${buttonStyles.ghost} size-9 disabled:opacity-30`}
+                    >
+                      <Icon name="chevronDown" className="size-4 rotate-180" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveFile(i, 1)}
+                      disabled={i === files.length - 1}
+                      aria-label={`把 ${f.name} 往後移`}
+                      className={`${buttonStyles.ghost} size-9 disabled:opacity-30`}
+                    >
+                      <Icon name="chevronDown" className="size-4" />
+                    </button>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeFile(i)}
+                  aria-label={`移除 ${f.name}`}
+                  className={`${buttonStyles.ghost} size-9 shrink-0`}
+                >
+                  <Icon name="x" className="size-4" />
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {!loading && (
+          <section className="flex flex-col gap-3 border-t border-line pt-5">
+            <div className="flex flex-col gap-0.5">
+              <h2 className="text-sm font-semibold">
+                補充資料 <span className="font-normal text-muted">（選填）</span>
+              </h2>
+              <p className="text-sm text-muted">附上簡報、白板照片或會議文件，AI 會和錄音一起參考，專有名詞與數字更準確。</p>
+            </div>
+
+            <label
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDraggingAttachments(true);
+              }}
+              onDragLeave={() => setDraggingAttachments(false)}
+              onDrop={handleAttachmentDrop}
+              className={`flex cursor-pointer items-center gap-3 rounded-2xl border-2 border-dashed px-4 py-4 transition-colors ${
+                draggingAttachments
+                  ? "border-accent bg-accent-soft"
+                  : "border-line-strong bg-surface-2/50 hover:border-accent/60 hover:bg-accent-soft/60"
+              }`}
             >
-              <Icon name="x" className="size-4" />
-            </button>
-          </div>
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                multiple
+                accept={ATTACHMENT_ACCEPT}
+                onChange={(e) => addAttachments(Array.from(e.target.files ?? []))}
+                className="sr-only"
+              />
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface text-accent shadow-card">
+                <Icon name="paperclip" className="size-5" />
+              </span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm font-medium">
+                  <span className="hidden sm:inline">拖曳檔案到這裡，或</span>
+                  <span className="text-accent underline decoration-accent/30 underline-offset-4">加入檔案</span>
+                </span>
+                <span className="text-xs text-muted">
+                  圖片（PNG、JPG、WEBP）、PDF、TXT、MD、CSV，最多 {MAX_ATTACHMENTS} 個、單檔 {MAX_ATTACHMENT_MB}MB
+                </span>
+              </span>
+            </label>
+
+            {attachments.length > 0 && (
+              <ul className="flex flex-col gap-2">
+                {attachments.map((a, i) => (
+                  <li
+                    key={`${a.name}-${a.size}`}
+                    className="flex items-center gap-3 rounded-xl border border-line bg-surface-2/60 px-3 py-2"
+                  >
+                    <Icon
+                      name={ATTACHMENT_KIND_BY_EXT[fileExtension(a.name)]?.kind === "image" ? "image" : "document"}
+                      className="size-4 shrink-0 text-accent"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-sm">{a.name}</span>
+                    <span className="shrink-0 text-xs text-muted">{formatSize(a.size)}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      aria-label={`移除 ${a.name}`}
+                      className={`${buttonStyles.ghost} size-8 shrink-0`}
+                    >
+                      <Icon name="x" className="size-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {attachmentError && (
+              <p role="alert" className="flex items-start gap-2 text-sm text-danger">
+                <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
+                {attachmentError}
+              </p>
+            )}
+          </section>
         )}
 
         {error && (
@@ -241,7 +449,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
 
         <button
           type="submit"
-          disabled={!file || loading}
+          disabled={files.length === 0 || loading}
           className={`${buttonStyles.primary} ${buttonStyles.lg} w-full sm:w-auto sm:self-end`}
         >
           {loading ? "處理中…" : meetingId ? "重試" : "產生會議記錄"}

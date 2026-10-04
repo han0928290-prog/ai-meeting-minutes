@@ -11,6 +11,23 @@ export type TranscriptSegment = {
   text: string;
 };
 
+/** 多個錄音檔接成一場會議時，每個檔案在時間軸上的起點 */
+export type RecordingPart = { fileName: string; startMs: number };
+
+/**
+ * 找出每個錄音檔（第 2 個起）從逐字稿的哪一段開始，回傳「段落索引 → 錄音檔索引」。
+ * 逐字稿顯示與交給 AI 整理時，用來在這些位置標示「第幾個錄音檔」
+ */
+export function recordingStarts(segments: { startMs: number }[], recordings: RecordingPart[]) {
+  const starts = new Map<number, number>();
+  for (const [r, rec] of recordings.entries()) {
+    if (r === 0) continue;
+    const i = segments.findIndex((s) => s.startMs >= rec.startMs);
+    if (i >= 0 && !starts.has(i)) starts.set(i, r);
+  }
+  return starts;
+}
+
 export type MeetingListItem = {
   id: string;
   title: string;
@@ -29,6 +46,8 @@ export type MeetingDetail = {
   durationSeconds: number | null;
   status: MeetingStatus;
   fileName: string | null;
+  // 上傳多個錄音檔時才有，依上傳順序
+  recordings: RecordingPart[] | null;
   audioUrl: string | null; // 本站 API 路徑，會驗證擁有者後才串流錄音檔
   transcript: { text: string; segments: TranscriptSegment[] };
   minutes: MeetingMinutes | null;
@@ -67,6 +86,7 @@ export function toMeetingDetail(doc: MeetingDoc): MeetingDetail {
     durationSeconds: doc.durationSeconds ?? null,
     status: doc.status,
     fileName: doc.source?.fileName ?? null,
+    recordings: doc.recordings?.length ? doc.recordings.map((r) => ({ fileName: r.fileName, startMs: r.startMs })) : null,
     audioUrl: doc.audio?.url ? audioApiPath(id) : null,
     transcript: {
       text: doc.transcript?.fullText ?? "",

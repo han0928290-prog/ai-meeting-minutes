@@ -12,11 +12,22 @@ import OpenAI, { toFile } from "openai";
 import type { TranscriptionDiarized } from "openai/resources/audio/transcriptions";
 import * as OpenCC from "opencc-js/cn2t";
 import { BLOB_ACCESS, audioContentType, deleteBlobQuietly } from "@/lib/blob";
-import { clipAsDataUrl, detectSilences, encodeSegment, planChunks, probeDurationSeconds } from "@/lib/ffmpeg";
+import { clipAsDataUrl, concatAudio, detectSilences, encodeSegment, planChunks, probeDurationSeconds } from "@/lib/ffmpeg";
 import { toMeetingDetail, type MeetingDetail, type TranscriptSegment } from "@/lib/meeting-dto";
 import { connectDB } from "@/lib/mongodb";
-import { SUMMARY_MODEL, summarizeTranscript, type MeetingMinutes } from "@/lib/summarize";
-import { MAX_AUDIO_SECONDS, MAX_UPLOAD_BYTES, userAudioPrefix } from "@/lib/upload-config";
+import { SUMMARY_MODEL, summarizeTranscript, type MeetingMinutes, type SummaryAttachment } from "@/lib/summarize";
+import {
+  ATTACHMENT_KIND_BY_EXT,
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENTS_TOTAL_BYTES,
+  MAX_ATTACHMENT_BYTES,
+  MAX_AUDIO_SECONDS,
+  MAX_RECORDINGS,
+  MAX_UPLOAD_BYTES,
+  fileExtension,
+  userAttachmentPrefix,
+  userAudioPrefix,
+} from "@/lib/upload-config";
 import { MeetingModel } from "@/models/Meeting";
 
 // 流程：prepareMeeting（切段）→ transcribeChunk（第 1 段，再其餘各段）→ finalizeMeeting（合併 + AI 整理）
@@ -46,6 +57,29 @@ export class PipelineError extends Error {
   }
 }
 
+/** API 路由攔到非預期錯誤時給使用者的訊息：至少說明是哪個動作、是不是資料庫連不上 */
+export function unexpectedErrorMessage(action: string, err: unknown) {
+  const name = err instanceof Error ? err.name : "";
+  if (name.startsWith("MongoServerSelection") || name.startsWith("MongooseServerSelection") || name === "MongoNetworkError") {
+    return `${action}失敗：無法連線到資料庫，請稍後再試`;
+  }
+  return `${action}時發生未預期的錯誤，詳細原因請看伺服器紀錄`;
+}
+
+// OpenAI 的原始錯誤訊息是英文且偏技術，常見狀況換成看得懂的說明，其餘附上原文方便查
+function describeOpenAIError(err: InstanceType<typeof OpenAI.APIError>) {
+  if (err instanceof OpenAI.APIConnectionTimeoutError) return "OpenAI 回應逾時，可以按「重試」再試一次";
+  if (err instanceof OpenAI.APIConnectionError) return "無法連線到 OpenAI，請確認網路連線";
+  if (err.status === 401) return "OpenAI API 金鑰無效或已過期，請檢查 OPENAI_API_KEY";
+  if (err.status === 429) {
+    return err.code === "insufficient_quota"
+      ? "OpenAI 帳戶額度不足，請到 OpenAI 後台儲值"
+      : "OpenAI 請求太頻繁，請稍候再按「重試」";
+  }
+  if (err.status !== undefined && err.status >= 500) return `OpenAI 服務暫時異常（HTTP ${err.status}），請稍後再試`;
+  return err.message;
+}
+
 function openaiClient() {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new PipelineError("伺服器未設定 OPENAI_API_KEY", 500);
@@ -69,85 +103,202 @@ async function withWorkDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 // ---------- 第一步：驗證上傳的原始檔、切段、建立會議紀錄 ----------
 
+export type AttachmentInput = { blobUrl: string; fileName: string };
+
+// 補充資料同樣由前端提供網址，逐一確認是這位使用者上傳、格式與大小都在限制內
+async function verifyAttachments(userId: string, inputs: AttachmentInput[]) {
+  if (inputs.length > MAX_ATTACHMENTS) throw new PipelineError(`補充資料最多 ${MAX_ATTACHMENTS} 個檔案`, 400);
+  const metas = await Promise.all(inputs.map((a) => head(a.blobUrl).catch(() => null)));
+  const verified = metas.map((meta, i) => {
+    if (!meta) throw new PipelineError(`找不到補充資料「${inputs[i].fileName}」，請重新上傳`, 400);
+    if (!meta.pathname.startsWith(userAttachmentPrefix(userId)) || !ATTACHMENT_KIND_BY_EXT[fileExtension(meta.pathname)]) {
+      throw new PipelineError("無效的補充資料", 403);
+    }
+    if (meta.size > MAX_ATTACHMENT_BYTES) {
+      throw new PipelineError(`「${inputs[i].fileName}」超過 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB 上限`, 413);
+    }
+    return {
+      url: meta.url,
+      pathname: meta.pathname,
+      fileName: inputs[i].fileName,
+      size: meta.size,
+      contentType: ATTACHMENT_KIND_BY_EXT[fileExtension(meta.pathname)].mime,
+    };
+  });
+  if (verified.reduce((sum, a) => sum + a.size, 0) > MAX_ATTACHMENTS_TOTAL_BYTES) {
+    throw new PipelineError(`補充資料合計超過 ${MAX_ATTACHMENTS_TOTAL_BYTES / 1024 / 1024}MB 上限`, 413);
+  }
+  return verified;
+}
+
+export type RecordingInput = { blobUrl: string; fileName: string };
+
+// 錄音檔由前端提供網址，逐一確認是這位使用者上傳、大小在限制內
+async function verifyRecordings(userId: string, inputs: RecordingInput[]) {
+  if (inputs.length === 0) throw new PipelineError("請至少上傳一個錄音檔", 400);
+  if (inputs.length > MAX_RECORDINGS) throw new PipelineError(`錄音檔最多 ${MAX_RECORDINGS} 個`, 400);
+  const metas = await Promise.all(inputs.map((r) => head(r.blobUrl).catch(() => null)));
+  // 確認屬於這位使用者的檔案，驗證失敗時一併清掉（前端重試會重新上傳）
+  const owned = metas.filter(
+    (meta): meta is NonNullable<typeof meta> =>
+      meta !== null &&
+      meta.pathname.startsWith(userAudioPrefix(userId)) &&
+      !meta.pathname.includes("/chunks/") &&
+      !meta.pathname.startsWith(userAttachmentPrefix(userId)),
+  );
+  const fail = async (message: string, status: number): Promise<never> => {
+    await Promise.all(owned.map((m) => deleteBlobQuietly(m.url)));
+    throw new PipelineError(message, status);
+  };
+
+  for (const [i, meta] of metas.entries()) {
+    if (!meta) await fail(`找不到上傳的錄音檔「${inputs[i].fileName}」，請重新上傳`, 400);
+    else if (!owned.includes(meta)) await fail("無效的錄音檔", 403);
+  }
+  if (owned.reduce((sum, m) => sum + m.size, 0) > MAX_UPLOAD_BYTES) {
+    await fail(`錄音檔合計超過 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB 上限`, 413);
+  }
+  return { metas: owned, cleanup: () => Promise.all(owned.map((m) => deleteBlobQuietly(m.url))) };
+}
+
 export async function prepareMeeting(
   userId: string,
-  input: { blobUrl: string; fileName: string },
+  input: { recordings: RecordingInput[]; attachments: AttachmentInput[] },
 ): Promise<{ meetingId: string; totalChunks: number; durationSeconds: number }> {
   // 檔案是瀏覽器直接傳到 Blob 的，網址由前端提供，必須確認真的是這位使用者上傳的
-  const meta = await head(input.blobUrl).catch(() => null);
-  if (!meta) throw new PipelineError("找不到上傳的錄音檔，請重新上傳", 400);
-  if (!meta.pathname.startsWith(userAudioPrefix(userId)) || meta.pathname.includes("/chunks/")) {
-    throw new PipelineError("無效的錄音檔", 403);
-  }
-  if (meta.size > MAX_UPLOAD_BYTES) {
-    await deleteBlobQuietly(meta.url);
-    throw new PipelineError(`錄音檔超過 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB 上限`, 413);
-  }
+  const { metas, cleanup } = await verifyRecordings(userId, input.recordings);
+  const names = input.recordings.map((r) => r.fileName);
+  const multiple = metas.length > 1;
+
+  const attachments = await verifyAttachments(userId, input.attachments).catch(async (err) => {
+    // 前端重試時會重新上傳，這次的錄音檔就用不到了
+    await cleanup();
+    throw err;
+  });
 
   await connectDB();
-  if (await MeetingModel.exists({ userId, "audio.url": meta.url })) {
+  if (!multiple && (await MeetingModel.exists({ userId, "audio.url": metas[0].url }))) {
     throw new PipelineError("這個錄音檔已經建立過會議紀錄", 409);
   }
 
   const meetingId = new Types.ObjectId();
-  const chunkUrls: string[] = [];
+  const createdUrls: string[] = []; // 這次產生的分段檔與合併檔，失敗時要清掉
+  // 目前進行到哪一步，失敗時告訴使用者卡在哪裡
+  let step = "下載錄音檔";
 
   try {
-    return await withWorkDir(async (dir) => {
-      const ext = path.extname(meta.pathname) || ".audio";
-      const original = path.join(dir, `original${ext}`);
-      await pipeline(
-        Readable.fromWeb((await downloadBlob(meta.url)) as NodeReadableStream),
-        createWriteStream(original),
-      );
-
-      const duration = await probeDurationSeconds(original);
-      if (duration < 1) throw new PipelineError("錄音長度太短", 400);
-      if (duration > MAX_AUDIO_SECONDS) {
-        throw new PipelineError(`錄音長度超過 ${MAX_AUDIO_SECONDS / 3600} 小時上限`, 413);
+    const result = await withWorkDir(async (dir) => {
+      const originals: string[] = [];
+      for (const [i, meta] of metas.entries()) {
+        step = multiple ? `下載第 ${i + 1} 個錄音檔「${names[i]}」` : "下載錄音檔";
+        const file = path.join(dir, `original-${i}${path.extname(meta.pathname) || ".audio"}`);
+        await pipeline(
+          Readable.fromWeb((await downloadBlob(meta.url)) as NodeReadableStream),
+          createWriteStream(file),
+        );
+        originals.push(file);
       }
 
-      const silences = duration > CHUNK_MAX_SECONDS ? await detectSilences(original) : [];
+      const durations: number[] = [];
+      for (const [i, file] of originals.entries()) {
+        step = multiple ? `讀取「${names[i]}」的錄音長度` : "讀取錄音長度";
+        const seconds = await probeDurationSeconds(file).catch((err: Error) => {
+          throw multiple ? new Error(`無法讀取音檔「${names[i]}」：${err.message.replace(/^無法讀取音檔，?/, "")}`) : err;
+        });
+        if (seconds < 1) throw new PipelineError(multiple ? `「${names[i]}」錄音長度太短` : "錄音長度太短", 400);
+        durations.push(seconds);
+      }
+      const duration = durations.reduce((a, b) => a + b, 0);
+      if (duration > MAX_AUDIO_SECONDS) {
+        throw new PipelineError(
+          `錄音長度${multiple ? "合計" : ""}超過 ${MAX_AUDIO_SECONDS / 3600} 小時上限`,
+          413,
+        );
+      }
+
+      // 多個錄音檔：依順序接成一個檔，之後的切段、轉錄、播放都用這個檔
+      let source = originals[0];
+      let audio = {
+        url: metas[0].url,
+        pathname: metas[0].pathname,
+        size: metas[0].size,
+        contentType: audioContentType(metas[0].pathname, metas[0].contentType),
+      };
+      if (multiple) {
+        step = `合併 ${metas.length} 個錄音檔`;
+        source = path.join(dir, "merged.mp3");
+        await concatAudio(originals, source);
+        step = "上傳合併後的錄音";
+        const merged = await put(`${userAudioPrefix(userId)}merged/${meetingId}.mp3`, await readFile(source), {
+          access: BLOB_ACCESS,
+          addRandomSuffix: true,
+          contentType: "audio/mpeg",
+        });
+        createdUrls.push(merged.url);
+        const size = (await head(merged.url)).size;
+        audio = { url: merged.url, pathname: merged.pathname, size, contentType: "audio/mpeg" };
+      }
+
+      step = "偵測靜音位置";
+      const silences = duration > CHUNK_MAX_SECONDS ? await detectSilences(source) : [];
       const plan = planChunks(duration, silences, CHUNK_MAX_SECONDS);
 
       const chunks = [];
       for (const [i, c] of plan.entries()) {
         const out = path.join(dir, `chunk-${i}.mp3`);
-        await encodeSegment(original, c.start, c.end - c.start, out);
+        step = `切割第 ${i + 1} 段錄音`;
+        await encodeSegment(source, c.start, c.end - c.start, out);
+        step = `上傳第 ${i + 1} 段錄音`;
         const blob = await put(`${userAudioPrefix(userId)}chunks/${meetingId}/${i}.mp3`, await readFile(out), {
           access: BLOB_ACCESS,
           addRandomSuffix: true,
           contentType: "audio/mpeg",
         });
-        chunkUrls.push(blob.url);
+        createdUrls.push(blob.url);
         chunks.push({ startMs: Math.round(c.start * 1000), endMs: Math.round(c.end * 1000), blobUrl: blob.url });
       }
 
+      // 每個錄音檔在合併後時間軸上的起點，逐字稿與 AI 整理用來標示「第幾個錄音」
+      let offset = 0;
+      const recordings = durations.map((seconds, i) => {
+        const part = { fileName: names[i], startMs: Math.round(offset * 1000), durationSeconds: seconds };
+        offset += seconds;
+        return part;
+      });
+
+      step = "儲存會議紀錄";
       await MeetingModel.create({
         _id: meetingId,
         userId,
-        title: input.fileName.replace(/\.[^.]+$/, "") || "未命名會議",
+        title: names[0].replace(/\.[^.]+$/, "") || "未命名會議",
         durationSeconds: duration,
-        source: { kind: "upload", fileName: input.fileName, mimeType: meta.contentType },
-        audio: {
-          url: meta.url,
-          pathname: meta.pathname,
-          size: meta.size,
-          contentType: audioContentType(meta.pathname, meta.contentType),
+        source: {
+          kind: "upload",
+          fileName: multiple ? `${names[0]} 等 ${names.length} 個檔案` : names[0],
+          mimeType: multiple ? "audio/mpeg" : metas[0].contentType,
         },
+        audio,
+        ...(multiple && { recordings }),
+        ...(attachments.length > 0 && { attachments }),
         status: "transcribing",
         processing: { chunks },
       });
 
       return { meetingId: String(meetingId), totalChunks: chunks.length, durationSeconds: duration };
     });
+    // 多個錄音檔已經合併保存，原始檔用不到了
+    if (multiple) await cleanup();
+    return result;
   } catch (err) {
-    // 沒有成功建立紀錄：清掉這次產生的分段檔與原始檔，避免孤兒檔案
-    await Promise.all([...chunkUrls, meta.url].map(deleteBlobQuietly));
+    // 沒有成功建立紀錄：清掉這次產生的分段檔、原始檔與補充資料，避免孤兒檔案
+    await Promise.all([...createdUrls, ...attachments.map((a) => a.url)].map(deleteBlobQuietly));
+    await cleanup();
     if (err instanceof PipelineError) throw err;
-    console.error("prepareMeeting failed:", err);
+    console.error(`prepareMeeting failed at「${step}」:`, err);
     throw new PipelineError(
-      err instanceof Error && err.message.startsWith("無法讀取音檔") ? err.message : "錄音檔處理失敗，請稍後再試",
+      err instanceof Error && err.message.startsWith("無法讀取音檔")
+        ? err.message
+        : `錄音檔處理失敗：${step}時發生錯誤，請重新上傳再試一次`,
       500,
     );
   }
@@ -197,9 +348,12 @@ export async function transcribeChunk(userId: string, meetingId: string, index: 
   const refs = index > 0 ? (doc.processing?.speakerRefs ?? []) : [];
   const refByName = new Map(refs.map((r) => [r.name, r.label]));
 
+  const part = `第 ${index + 1} 段`;
+  let step = "下載音檔";
   try {
     const audio = Buffer.from(await new Response(await downloadBlob(chunk.blobUrl)).arrayBuffer());
 
+    step = "語音轉文字";
     // SDK 的型別沒有 diarized_json 專屬 overload，回傳值需自行轉型
     const result = (await openaiClient().audio.transcriptions.create({
       file: await toFile(audio, `chunk-${index}.mp3`, { type: "audio/mpeg" }),
@@ -238,6 +392,7 @@ export async function transcribeChunk(userId: string, meetingId: string, index: 
 
     // 有多段時，從第一段建立講者聲音樣本
     if (index === 0 && chunks.length > 1) {
+      step = "擷取講者聲音樣本";
       update["processing.speakerRefs"] = await withWorkDir(async (dir) => {
         const file = path.join(dir, "chunk-0.mp3");
         await writeFile(file, audio);
@@ -252,6 +407,7 @@ export async function transcribeChunk(userId: string, meetingId: string, index: 
       });
     }
 
+    step = "儲存轉錄結果";
     // 用欄位路徑更新：不同段同時完成也不會互相覆蓋
     await MeetingModel.updateOne(
       { _id: meetingId, userId },
@@ -259,8 +415,10 @@ export async function transcribeChunk(userId: string, meetingId: string, index: 
     );
   } catch (err) {
     const message =
-      err instanceof OpenAI.APIError ? `語音轉文字失敗：${err.message}` : "語音轉文字失敗，請稍後再試";
-    console.error(`transcribeChunk ${meetingId}#${index} failed:`, err);
+      err instanceof OpenAI.APIError
+        ? `${part}語音轉文字失敗：${describeOpenAIError(err)}`
+        : `${part}處理失敗：${step}時發生錯誤，可以按「重試」再試一次`;
+    console.error(`transcribeChunk ${meetingId}#${index} failed at「${step}」:`, err);
     await MeetingModel.updateOne(
       { _id: meetingId, userId },
       { $set: { [`processing.chunks.${index}.error`]: message } },
@@ -319,11 +477,32 @@ export async function finalizeMeeting(userId: string, meetingId: string): Promis
   let minutesError: string | undefined;
   if (fullText.trim()) {
     try {
-      minutes = await summarizeTranscript(openaiClient(), fullText, segments);
+      const attachments: SummaryAttachment[] = await Promise.all(
+        (doc.attachments ?? []).map(async (a) => {
+          const type = ATTACHMENT_KIND_BY_EXT[fileExtension(a.pathname)];
+          const data = await downloadBlob(a.url)
+            .then((stream) => new Response(stream).arrayBuffer())
+            .catch(() => {
+              throw new PipelineError(`無法讀取補充資料「${a.fileName}」`, 500);
+            });
+          return { fileName: a.fileName, kind: type.kind, mime: type.mime, data: Buffer.from(data) };
+        }),
+      );
+      minutes = await summarizeTranscript(openaiClient(), fullText, segments, {
+        attachments,
+        recordings: doc.recordings ?? [],
+      });
     } catch (err) {
       console.error("Summarization failed:", err);
-      minutesError =
-        err instanceof OpenAI.APIError ? `AI 整理失敗：${err.message}` : "AI 整理失敗，請稍後再試";
+      minutesError = `AI 整理失敗：${
+        err instanceof OpenAI.APIError
+          ? describeOpenAIError(err)
+          : err instanceof PipelineError
+            ? err.message
+            : err instanceof Error && err.message.startsWith("模型沒有完成整理")
+              ? "AI 沒有完成整理，可能是內容太長，請再試一次"
+              : "整理時發生未預期的錯誤，詳細原因請看伺服器紀錄"
+      }`;
     }
   } else {
     minutesError = "錄音中沒有辨識到語音內容";

@@ -110,6 +110,30 @@ export async function encodeSegment(input: string, start: number, duration: numb
   await runFfmpeg(["-y", "-ss", start.toFixed(3), "-i", input, "-t", duration.toFixed(3), ...SPEECH_ENCODE, output]);
 }
 
+/**
+ * 把多個錄音檔依順序接成一個 mp3（播放與後續切段都用這個檔）。
+ * 各檔的取樣率、聲道可能不同，先統一格式再接，否則 concat 會失敗
+ */
+export async function concatAudio(inputs: string[], output: string) {
+  const normalize = inputs
+    .map((_, i) => `[${i}:a:0]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono[a${i}]`)
+    .join(";");
+  const joined = inputs.map((_, i) => `[a${i}]`).join("");
+  await runFfmpeg([
+    "-y",
+    ...inputs.flatMap((file) => ["-i", file]),
+    "-filter_complex",
+    `${normalize};${joined}concat=n=${inputs.length}:v=0:a=1[out]`,
+    "-map",
+    "[out]",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "64k",
+    output,
+  ]);
+}
+
 /** 擷取一小段音訊，回傳 data URL（給 known_speaker_references 用） */
 export async function clipAsDataUrl(input: string, start: number, duration: number, workDir: string) {
   const out = path.join(workDir, `ref-${start.toFixed(2)}.mp3`);

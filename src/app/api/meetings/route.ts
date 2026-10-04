@@ -1,4 +1,4 @@
-import { PipelineError, prepareMeeting } from "@/lib/chunked-transcription";
+import { PipelineError, prepareMeeting, unexpectedErrorMessage } from "@/lib/chunked-transcription";
 import { getSessionUserId } from "@/lib/dal";
 import { toMeetingListItem, type MeetingListItem } from "@/lib/meeting-dto";
 import { connectDB } from "@/lib/mongodb";
@@ -61,7 +61,19 @@ export type CreateMeetingResponse = {
   durationSeconds: number;
 };
 
-// POST /api/meetings — 錄音檔已由瀏覽器直接上傳到 Blob，這裡驗證檔案、切段並建立會議紀錄。
+type UploadedFile = { blobUrl: string; fileName: string };
+
+function isFileList(value: unknown): value is UploadedFile[] {
+  return (
+    Array.isArray(value) &&
+    value.every((f) => typeof f?.blobUrl === "string" && typeof f.fileName === "string" && f.fileName.trim() !== "")
+  );
+}
+
+const trimFileName = (f: UploadedFile) => ({ blobUrl: f.blobUrl, fileName: f.fileName.trim().slice(0, 200) });
+
+// POST /api/meetings — 錄音檔（可多個，依順序接續）與補充資料已由瀏覽器直接上傳到 Blob，
+// 這裡驗證檔案、合併、切段並建立會議紀錄。
 // 之後由前端依序呼叫 /chunks/:index 轉錄各段，最後呼叫 /finalize
 export async function POST(request: Request) {
   const userId = await getSessionUserId();
@@ -69,15 +81,17 @@ export async function POST(request: Request) {
     return Response.json({ error: "請先登入" }, { status: 401 });
   }
 
-  const input = (await request.json().catch(() => null)) as { blobUrl?: unknown; fileName?: unknown } | null;
-  if (typeof input?.blobUrl !== "string" || typeof input.fileName !== "string" || !input.fileName.trim()) {
+  const input = (await request.json().catch(() => null)) as { recordings?: unknown; attachments?: unknown } | null;
+  const recordings = input?.recordings;
+  const attachments = input?.attachments ?? [];
+  if (!isFileList(recordings) || recordings.length === 0 || !isFileList(attachments)) {
     return Response.json({ error: "請求格式錯誤" }, { status: 400 });
   }
 
   try {
     const body: CreateMeetingResponse = await prepareMeeting(userId, {
-      blobUrl: input.blobUrl,
-      fileName: input.fileName.trim().slice(0, 200),
+      recordings: recordings.map(trimFileName),
+      attachments: attachments.map(trimFileName),
     });
     return Response.json(body, { status: 201 });
   } catch (err) {
@@ -85,6 +99,6 @@ export async function POST(request: Request) {
       return Response.json({ error: err.message }, { status: err.status });
     }
     console.error("Create meeting failed:", err);
-    return Response.json({ error: "錄音檔處理失敗，請稍後再試" }, { status: 500 });
+    return Response.json({ error: unexpectedErrorMessage("建立會議", err) }, { status: 500 });
   }
 }

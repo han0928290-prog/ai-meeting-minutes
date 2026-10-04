@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import type { MeetingListResponse } from "@/app/api/meetings/route";
 import { formatTime } from "@/components/MeetingView";
 import { Icon, buttonStyles } from "@/components/ui";
+import { ApiError, requestJson } from "@/lib/meeting-pipeline";
 
 function DateBlock({ iso }: { iso: string }) {
   const d = new Date(iso);
@@ -42,18 +43,13 @@ export default function MeetingHistory() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/meetings?page=${page}`)
-      .then(async (res) => {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error ?? "讀取失敗");
-        if (!cancelled) setData(json as MeetingListResponse);
+    requestJson<MeetingListResponse>("讀取歷史紀錄", `/api/meetings?page=${page}`)
+      .then((json) => {
+        if (!cancelled) setData(json);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "讀取失敗");
+        if (err instanceof ApiError && err.status === 401) return router.replace("/login");
+        if (!cancelled) setError(err instanceof Error ? err.message : "讀取歷史紀錄失敗");
       });
     return () => {
       cancelled = true;

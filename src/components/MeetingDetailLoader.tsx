@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import MeetingView from "@/components/MeetingView";
 import ProcessingStatus from "@/components/ProcessingStatus";
-import { ApiError, processMeeting, type PipelineStage } from "@/lib/meeting-pipeline";
+import { ApiError, fetchMeeting, processMeeting, type PipelineStage } from "@/lib/meeting-pipeline";
 import { Icon, buttonStyles } from "@/components/ui";
 import type { MeetingDetail } from "@/lib/meeting-dto";
 
@@ -34,18 +34,13 @@ export default function MeetingDetailLoader({ id }: { id: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/meetings/${encodeURIComponent(id)}`)
-      .then(async (res) => {
-        if (res.status === 401) {
-          router.replace("/login");
-          return;
-        }
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error ?? "讀取失敗");
-        if (!cancelled) setMeeting(json as MeetingDetail);
+    fetchMeeting(id)
+      .then((json) => {
+        if (!cancelled) setMeeting(json);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "讀取失敗");
+        if (err instanceof ApiError && err.status === 401) return router.replace("/login");
+        if (!cancelled) setError(err instanceof Error ? err.message : "讀取會議紀錄失敗");
       });
     return () => {
       cancelled = true;
@@ -56,7 +51,7 @@ export default function MeetingDetailLoader({ id }: { id: string }) {
     <div className="flex flex-col gap-6">
       <Link
         href="/meetings"
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted transition-colors hover:text-ink"
+        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted transition-colors hover:text-ink print:hidden"
       >
         <Icon name="arrowLeft" className="size-4" />
         歷史紀錄

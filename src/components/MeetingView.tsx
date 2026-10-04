@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Icon, buttonStyles, type IconName } from "@/components/ui";
-import type { MeetingDetail } from "@/lib/meeting-dto";
+import { recordingStarts, type MeetingDetail } from "@/lib/meeting-dto";
 
 // 講者配色：avatar 底色 + 文字色，亮暗模式都清楚
 const SPEAKER_STYLES = [
@@ -49,7 +49,9 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={`flex min-w-0 flex-col gap-4 rounded-3xl border border-line bg-surface p-5 shadow-card sm:p-6 ${className}`}>
+    <section
+      className={`flex min-w-0 flex-col gap-4 rounded-3xl border border-line bg-surface p-5 shadow-card sm:p-6 print:rounded-xl print:p-4 print:shadow-none ${className}`}
+    >
       {title && (
         <div className="flex items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-[15px] font-semibold">
@@ -81,6 +83,30 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
   const speakers = [...new Set(segments.map((s) => s.speaker))];
   const hasTranscript = segments.length > 0 || text.trim().length > 0;
   const visibleSegments = expanded ? segments : segments.slice(0, TRANSCRIPT_PREVIEW);
+  // 多個錄音檔接成的會議：在每個檔案開始的位置加上分隔標示
+  const recordings = meeting.recordings ?? [];
+  const recordingStartAt = recordingStarts(segments, recordings);
+  if (recordings.length > 1 && segments.length > 0) recordingStartAt.set(0, 0);
+
+  // 列印（按鈕或 Ctrl+P 都會觸發）時把網頁標題換成會議標題，
+  // 「另存為 PDF」的預設檔名就會是會議標題；印完再還原
+  useEffect(() => {
+    let prevTitle: string | null = null;
+    const before = () => {
+      prevTitle = document.title;
+      document.title = meeting.title;
+    };
+    const after = () => {
+      if (prevTitle !== null) document.title = prevTitle;
+      prevTitle = null;
+    };
+    window.addEventListener("beforeprint", before);
+    window.addEventListener("afterprint", after);
+    return () => {
+      window.removeEventListener("beforeprint", before);
+      window.removeEventListener("afterprint", after);
+    };
+  }, [meeting.title]);
 
   // 點逐字稿時間戳跳到錄音對應位置
   function seekTo(ms: number) {
@@ -98,7 +124,18 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
             {meeting.title}
           </h1>
           {(minutes || hasTranscript) && (
-            <div className="flex shrink-0 gap-2">
+            <div className="flex shrink-0 flex-wrap gap-2 print:hidden">
+              {minutes && (
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  title="列印會議記錄（不含逐字稿），或在列印視窗選「另存為 PDF」"
+                  className={`${buttonStyles.secondary} ${buttonStyles.sm} flex-1 sm:flex-none`}
+                >
+                  <Icon name="printer" className="size-4" />
+                  列印／存成 PDF
+                </button>
+              )}
               {minutes && (
                 <a
                   href={`/api/meetings/${meeting.id}/docx`}
@@ -130,13 +167,19 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
             <MetaChip icon="clock">{formatTime(meeting.durationSeconds * 1000)}</MetaChip>
           )}
           {speakers.length > 0 && <MetaChip icon="users">{speakers.length} 位講者</MetaChip>}
-          {meeting.fileName && <MetaChip icon="file">{meeting.fileName}</MetaChip>}
+          {recordings.length > 1 ? (
+            <span title={recordings.map((r, i) => `${i + 1}. ${r.fileName}`).join("\n")}>
+              <MetaChip icon="file">{recordings.length} 個錄音檔接續</MetaChip>
+            </span>
+          ) : (
+            meeting.fileName && <MetaChip icon="file">{meeting.fileName}</MetaChip>
+          )}
         </div>
       </header>
 
       {/* 手機：錄音 → 摘要 → 待辦 → 重點 → 逐字稿；桌機：左欄內容、右欄錄音與待辦 */}
-      <div className="grid gap-5 [grid-template-areas:'audio'_'summary'_'actions'_'points'_'transcript'] lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:[grid-template-areas:'summary_audio'_'points_actions'_'transcript_actions']">
-        <div className="min-w-0 [grid-area:audio]">
+      <div className="grid gap-5 [grid-template-areas:'audio'_'summary'_'actions'_'points'_'transcript'] lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-6 lg:[grid-template-areas:'summary_audio'_'points_actions'_'transcript_actions'] print:flex print:flex-col print:gap-4">
+        <div className="min-w-0 [grid-area:audio] print:hidden">
           {meeting.audioUrl ? (
             <div className="flex flex-col gap-3 rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-5">
               <p className="flex items-center gap-2 text-sm font-medium">
@@ -165,7 +208,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
               <Card
                 title="待辦事項"
                 icon="checkCircle"
-                className="lg:sticky lg:top-24"
+                className="lg:sticky lg:top-24 print:static"
                 aside={
                   minutes.actionItems.length > 0 && (
                     <span className="rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-semibold text-accent">
@@ -177,7 +220,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
                 {minutes.actionItems.length > 0 ? (
                   <ul className="flex flex-col gap-2.5">
                     {minutes.actionItems.map((item, i) => (
-                      <li key={i} className="flex gap-3 rounded-2xl bg-surface-2/70 p-3.5">
+                      <li key={i} className="flex gap-3 rounded-2xl bg-surface-2/70 p-3.5 break-inside-avoid">
                         <span className="mt-[7px] size-2 shrink-0 rounded-full bg-accent" />
                         <div className="flex min-w-0 flex-col gap-2">
                           <span className="text-sm leading-relaxed">{item.task}</span>
@@ -213,7 +256,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
               {minutes.keyPoints.length > 0 ? (
                 <ol className="flex flex-col gap-3">
                   {minutes.keyPoints.map((point, i) => (
-                    <li key={i} className="flex gap-3 text-[15px] leading-relaxed">
+                    <li key={i} className="flex gap-3 text-[15px] leading-relaxed break-inside-avoid">
                       <span className="w-6 shrink-0 pt-px font-mono text-sm font-semibold text-accent tabular-nums">
                         {String(i + 1).padStart(2, "0")}
                       </span>
@@ -236,7 +279,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
         <Card
           title="完整逐字稿"
           icon="mic"
-          className="[grid-area:transcript]"
+          className="[grid-area:transcript] print:hidden"
           aside={<span className="text-xs text-muted">{segments.length} 段</span>}
         >
           {segments.length > 0 ? (
@@ -244,38 +287,54 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
               <ol className="flex flex-col">
                 {visibleSegments.map((seg, i) => {
                   const style = SPEAKER_STYLES[speakers.indexOf(seg.speaker) % SPEAKER_STYLES.length];
-                  const sameSpeaker = i > 0 && visibleSegments[i - 1].speaker === seg.speaker;
+                  const recordingIndex = recordingStartAt.get(i);
+                  const sameSpeaker =
+                    i > 0 && recordingIndex === undefined && visibleSegments[i - 1].speaker === seg.speaker;
                   return (
-                    <li key={i} className={`flex gap-3 ${sameSpeaker ? "pt-1.5" : "pt-4 first:pt-0"}`}>
-                      <span
-                        className={`grid size-8 shrink-0 place-items-center rounded-full text-xs font-semibold ${style} ${
-                          sameSpeaker ? "invisible" : ""
-                        }`}
-                        aria-hidden={sameSpeaker}
-                      >
-                        {seg.speaker.slice(0, 2)}
-                      </span>
-                      <div className="flex min-w-0 flex-1 flex-col gap-1">
-                        {!sameSpeaker && <span className="text-xs font-semibold">講者 {seg.speaker}</span>}
-                        <p className="text-[15px] leading-relaxed break-words">
-                          {meeting.audioUrl ? (
-                            <button
-                              type="button"
-                              onClick={() => seekTo(seg.startMs)}
-                              title="從這裡播放"
-                              className="mr-2 rounded-md bg-surface-2 px-1.5 py-0.5 align-[1px] font-mono text-[11px] text-muted tabular-nums transition-colors hover:bg-accent-soft hover:text-accent"
-                            >
-                              {formatTime(seg.startMs)}
-                            </button>
-                          ) : (
-                            <span className="mr-2 font-mono text-[11px] text-muted tabular-nums">
-                              {formatTime(seg.startMs)}
+                    <Fragment key={i}>
+                      {recordingIndex !== undefined && (
+                        <li className="flex items-center gap-3 pt-5 pb-1 text-xs text-muted first:pt-0">
+                          <span className="h-px flex-1 bg-line-strong" />
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <Icon name="file" className="size-3.5 shrink-0" />
+                            <span className="truncate">
+                              第 {recordingIndex + 1} 個錄音檔・{recordings[recordingIndex].fileName}
                             </span>
-                          )}
-                          {seg.text}
-                        </p>
-                      </div>
-                    </li>
+                          </span>
+                          <span className="h-px flex-1 bg-line-strong" />
+                        </li>
+                      )}
+                      <li className={`flex gap-3 ${sameSpeaker ? "pt-1.5" : "pt-4 first:pt-0"}`}>
+                        <span
+                          className={`grid size-8 shrink-0 place-items-center rounded-full text-xs font-semibold ${style} ${
+                            sameSpeaker ? "invisible" : ""
+                          }`}
+                          aria-hidden={sameSpeaker}
+                        >
+                          {seg.speaker.slice(0, 2)}
+                        </span>
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          {!sameSpeaker && <span className="text-xs font-semibold">講者 {seg.speaker}</span>}
+                          <p className="text-[15px] leading-relaxed break-words">
+                            {meeting.audioUrl ? (
+                              <button
+                                type="button"
+                                onClick={() => seekTo(seg.startMs)}
+                                title="從這裡播放"
+                                className="mr-2 rounded-md bg-surface-2 px-1.5 py-0.5 align-[1px] font-mono text-[11px] text-muted tabular-nums transition-colors hover:bg-accent-soft hover:text-accent"
+                              >
+                                {formatTime(seg.startMs)}
+                              </button>
+                            ) : (
+                              <span className="mr-2 font-mono text-[11px] text-muted tabular-nums">
+                                {formatTime(seg.startMs)}
+                              </span>
+                            )}
+                            {seg.text}
+                          </p>
+                        </div>
+                      </li>
+                    </Fragment>
                   );
                 })}
               </ol>

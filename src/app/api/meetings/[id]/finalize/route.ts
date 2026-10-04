@@ -1,5 +1,5 @@
 import { isValidObjectId } from "mongoose";
-import { PipelineError, finalizeMeeting } from "@/lib/chunked-transcription";
+import { PipelineError, finalizeMeeting, unexpectedErrorMessage } from "@/lib/chunked-transcription";
 import { getSessionUserId } from "@/lib/dal";
 
 // 長會議的逐字稿交給 AI 整理可能需要一兩分鐘
@@ -24,6 +24,6 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/meetings/[
       return Response.json({ error: err.message }, { status: err.status });
     }
     console.error("Finalize failed:", err);
-    return Response.json({ error: "會議紀錄整理失敗，請稍後再試" }, { status: 500 });
+    return Response.json({ error: unexpectedErrorMessage("合併逐字稿與 AI 整理", err) }, { status: 500 });
   }
 }

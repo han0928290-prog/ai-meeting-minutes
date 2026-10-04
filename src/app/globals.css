@@ -122,3 +122,33 @@ body {
 audio {
   color-scheme: light dark;
 }
+
+/* 列印／存成 PDF：不論系統是否深色模式，一律用白紙黑字的亮色配色 */
+@media print {
+  :root {
+    --canvas: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f3f2ee;
+    --ink: #16161a;
+    --muted: #5c5b57;
+    --line: rgb(22 22 26 / 0.14);
+    --line-strong: rgb(22 22 26 / 0.22);
+    --accent: #3a4fe0;
+    --accent-soft: #eceeff;
+    --success: #0f7a55;
+    --success-soft: #e3f4ec;
+    --warning: #9a5b00;
+    --warning-soft: #fff3dc;
+    --shadow: none;
+  }
+
+  @page {
+    size: A4;
+    margin: 16mm 14mm;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
