@@ -3,9 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon, type IconName } from "@/components/ui";
+import { NOTE_TYPES, NOTE_TYPE_LABELS } from "@/lib/upload-config";
 
-const LINKS: { href: string; label: string; icon: IconName; match: (p: string) => boolean }[] = [
-  { href: "/new", label: "新增會議", icon: "plus", match: (p) => p === "/new" },
+// shortLabel：手機寬度放不下完整文字時顯示
+const LINKS: { href: string; label: string; shortLabel?: string; icon: IconName; match: (p: string) => boolean }[] = [
+  {
+    href: "/new",
+    label: `新增${NOTE_TYPES.map((t) => NOTE_TYPE_LABELS[t]).join("／")}`,
+    shortLabel: "新增",
+    icon: "plus",
+    match: (p) => p === "/new",
+  },
   { href: "/meetings", label: "歷史紀錄", icon: "history", match: (p) => p.startsWith("/meetings") },
 ];
 
@@ -26,7 +34,14 @@ export default function HeaderNav() {
             }`}
           >
             <Icon name={link.icon} className="size-4" />
-            <span>{link.label}</span>
+            {link.shortLabel ? (
+              <>
+                <span className="hidden md:inline">{link.label}</span>
+                <span className="md:hidden">{link.shortLabel}</span>
+              </>
+            ) : (
+              <span>{link.label}</span>
+            )}
           </Link>
         );
       })}

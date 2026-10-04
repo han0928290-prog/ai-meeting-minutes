@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { APP_NAME } from "@/lib/site";
 
 // 全站共用的小型 UI 元件：圖示、Logo、按鈕樣式
 
@@ -70,7 +71,7 @@ export function Logo({ compact = false }: { compact?: boolean }) {
           ))}
         </span>
       </span>
-      {!compact && <span className="text-[15px] font-semibold tracking-tight">AI 會議記錄</span>}
+      {!compact && <span className="text-[15px] font-semibold tracking-tight">{APP_NAME}</span>}
     </span>
   );
 }

@@ -16,6 +16,7 @@ import {
 } from "docx";
 import type { MeetingDetail, TranscriptSegment } from "@/lib/meeting-dto";
 import type { MeetingMinutes, StudyNotes } from "@/lib/summarize";
+import { APP_NAME } from "@/lib/site";
 
 // Word 檔：會議記錄（摘要、重點、待辦）、讀書筆記（摘要、重點概念、名詞、例子）與逐字稿
 
@@ -116,8 +117,8 @@ function footnote(text: string) {
 function createDocument(title: string, children: (Paragraph | Table)[]) {
   return new Document({
     title,
-    creator: "AI 會議記錄",
-    description: "由 AI 會議記錄自動產生",
+    creator: APP_NAME,
+    description: `由 ${APP_NAME} 自動產生`,
     styles: {
       default: {
         document: {

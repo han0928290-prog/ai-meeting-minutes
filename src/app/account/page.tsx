@@ -2,8 +2,9 @@ import { redirect } from "next/navigation";
 import ChangePasswordForm from "@/components/ChangePasswordForm";
 import { Eyebrow } from "@/components/ui";
 import { getCurrentUser } from "@/lib/dal";
+import { pageTitle } from "@/lib/site";
 
-export const metadata = { title: "帳號設定｜AI 會議記錄" };
+export const metadata = { title: pageTitle("帳號設定") };
 
 export default async function AccountPage() {
   const user = await getCurrentUser();

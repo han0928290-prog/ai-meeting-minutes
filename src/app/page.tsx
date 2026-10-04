@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { Eyebrow, Icon, Logo, buttonStyles, type IconName } from "@/components/ui";
 import { getSessionUserId } from "@/lib/dal";
+import { APP_NAME } from "@/lib/site";
 
 export const metadata = {
-  title: "AI 會議記錄｜上傳錄音，自動產生逐字稿、摘要與待辦",
+  title: `${APP_NAME}｜上傳錄音，自動產生逐字稿、會議記錄與讀書筆記`,
   description: "上傳會議錄音，幾分鐘內拿到分講者的逐字稿、摘要、重點與待辦事項。",
 };
 
@@ -313,7 +314,7 @@ export default async function LandingPage() {
       <footer className="border-t border-line">
         <div className="mx-auto flex w-full max-w-6xl flex-col items-start justify-between gap-4 px-4 py-8 text-sm text-muted sm:flex-row sm:items-center sm:px-6">
           <Logo />
-          <p>© {new Date().getFullYear()} AI 會議記錄</p>
+          <p>© {new Date().getFullYear()} {APP_NAME}</p>
         </div>
       </footer>
     </main>

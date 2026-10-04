@@ -3,14 +3,15 @@ import { logout } from "@/app/actions/auth";
 import HeaderNav from "@/components/HeaderNav";
 import { Icon, Logo, buttonStyles } from "@/components/ui";
 import { getCurrentUser } from "@/lib/dal";
+import { APP_NAME } from "@/lib/site";
 
 export default async function SiteHeader() {
   const user = await getCurrentUser();
 
   return (
-    <header className="sticky top-0 z-40 print:hiddenborder-b border-line bg-canvas/80 backdrop-blur-xl supports-[backdrop-filter]:bg-canvas/70">
+    <header className="sticky top-0 z-40 border-b border-line print:hidden bg-canvas/80 backdrop-blur-xl supports-[backdrop-filter]:bg-canvas/70">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
-        <Link href="/" aria-label="AI 會議記錄 首頁" className="shrink-0">
+        <Link href="/" aria-label={`${APP_NAME} 首頁`} className="shrink-0">
           <span className="sm:hidden">
             <Logo compact={Boolean(user)} />
           </span>

@@ -1,7 +1,8 @@
 import AuthForm from "@/components/AuthForm";
 import AuthShell from "@/components/AuthShell";
+import { pageTitle } from "@/lib/site";
 
-export const metadata = { title: "註冊｜AI 會議記錄" };
+export const metadata = { title: pageTitle("註冊") };
 
 export default function Page() {
   return (

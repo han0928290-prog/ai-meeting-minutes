@@ -2,8 +2,9 @@ import Link from "next/link";
 import MeetingHistory from "@/components/MeetingHistory";
 import { Eyebrow, Icon, buttonStyles } from "@/components/ui";
 import { verifySession } from "@/lib/dal";
+import { pageTitle } from "@/lib/site";
 
-export const metadata = { title: "歷史紀錄｜AI 會議記錄" };
+export const metadata = { title: pageTitle("歷史紀錄") };
 
 export default async function MeetingsPage() {
   await verifySession();

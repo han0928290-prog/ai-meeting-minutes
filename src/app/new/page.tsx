@@ -1,8 +1,9 @@
 import AudioUploader from "@/components/AudioUploader";
 import { Eyebrow } from "@/components/ui";
 import { verifySession } from "@/lib/dal";
+import { pageTitle } from "@/lib/site";
 
-export const metadata = { title: "新增會議｜AI 會議記錄" };
+export const metadata = { title: pageTitle("新增紀錄") };
 
 export default async function NewMeetingPage() {
   const { userId } = await verifySession();
