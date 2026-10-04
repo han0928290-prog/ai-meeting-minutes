@@ -3,13 +3,22 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui";
 import type { PipelineStage } from "@/lib/meeting-pipeline";
+import { NOTE_TYPE_LABELS, type NoteType } from "@/lib/upload-config";
 
-const STEPS = [
-  { kind: "uploading", label: "上傳錄音檔" },
-  { kind: "preparing", label: "分析錄音、切成段落" },
-  { kind: "transcribing", label: "語音轉文字、辨識講者" },
-  { kind: "summarizing", label: "AI 整理摘要與待辦" },
-] as const;
+// 最後一步 AI 整理的內容依紀錄類型不同
+const SUMMARIZING_LABELS: Record<NoteType, string> = {
+  meeting: "AI 整理摘要與待辦",
+  study: "AI 整理摘要、重點概念與名詞",
+};
+
+function steps(noteType: NoteType) {
+  return [
+    { kind: "uploading", label: "上傳錄音檔" },
+    { kind: "preparing", label: "分析錄音、切成段落" },
+    { kind: "transcribing", label: "語音轉文字、辨識講者" },
+    { kind: "summarizing", label: SUMMARIZING_LABELS[noteType] },
+  ] satisfies { kind: PipelineStage["kind"]; label: string }[];
+}
 
 function useElapsedSeconds() {
   const [seconds, setSeconds] = useState(0);
@@ -39,8 +48,17 @@ function stageDetail(stage: PipelineStage): { text?: string; percent?: number } 
   }
 }
 
-export default function ProcessingStatus({ stage, title }: { stage: PipelineStage; title: string }) {
+export default function ProcessingStatus({
+  stage,
+  title,
+  noteType,
+}: {
+  stage: PipelineStage;
+  title: string;
+  noteType: NoteType;
+}) {
   const elapsed = useElapsedSeconds();
+  const STEPS = steps(noteType);
   const activeIndex = STEPS.findIndex((s) => s.kind === stage.kind);
   const detail = stageDetail(stage);
 
@@ -57,7 +75,7 @@ export default function ProcessingStatus({ stage, title }: { stage: PipelineStag
       </div>
 
       <div className="flex max-w-full flex-col gap-1">
-        <p className="text-base font-medium">正在產生會議記錄</p>
+        <p className="text-base font-medium">正在產生{NOTE_TYPE_LABELS[noteType]}</p>
         <p className="truncate text-sm text-muted">{title}</p>
       </div>
 

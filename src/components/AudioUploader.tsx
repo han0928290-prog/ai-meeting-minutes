@@ -342,6 +342,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
         {stage ? (
           <ProcessingStatus
             stage={stage}
+            noteType={noteType}
             title={files.length > 1 ? `${files[0].name} 等 ${files.length} 個錄音檔` : (files[0]?.name ?? "")}
           />
         ) : (
@@ -531,7 +532,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
           disabled={files.length === 0 || loading}
           className={`${buttonStyles.primary} ${buttonStyles.lg} w-full sm:w-auto sm:self-end`}
         >
-          {loading ? "處理中…" : meetingId ? "重試" : "產生會議記錄"}
+          {loading ? "處理中…" : meetingId ? "重試" : `產生${NOTE_TYPE_LABELS[noteType]}`}
           {!loading && <Icon name="arrowRight" className="size-4" />}
         </button>
       </form>

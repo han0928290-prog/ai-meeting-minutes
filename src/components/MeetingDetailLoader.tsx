@@ -8,6 +8,7 @@ import ProcessingStatus from "@/components/ProcessingStatus";
 import { ApiError, fetchMeeting, processMeeting, type PipelineStage } from "@/lib/meeting-pipeline";
 import { Icon, buttonStyles } from "@/components/ui";
 import type { MeetingDetail } from "@/lib/meeting-dto";
+import { NOTE_TYPE_LABELS } from "@/lib/upload-config";
 
 function Skeleton() {
   return (
@@ -40,7 +41,7 @@ export default function MeetingDetailLoader({ id }: { id: string }) {
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) return router.replace("/login");
-        if (!cancelled) setError(err instanceof Error ? err.message : "讀取會議紀錄失敗");
+        if (!cancelled) setError(err instanceof Error ? err.message : "讀取紀錄失敗");
       });
     return () => {
       cancelled = true;
@@ -97,7 +98,7 @@ function ResumePanel({ meeting, onDone }: { meeting: MeetingDetail; onDone: (m: 
   if (stage) {
     return (
       <div className="rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-6">
-        <ProcessingStatus stage={stage} title={meeting.fileName ?? meeting.title} />
+        <ProcessingStatus stage={stage} title={meeting.fileName ?? meeting.title} noteType={meeting.noteType} />
       </div>
     );
   }
@@ -108,7 +109,7 @@ function ResumePanel({ meeting, onDone }: { meeting: MeetingDetail; onDone: (m: 
         <Icon name="clock" className="size-6" />
       </span>
       <div className="flex flex-col gap-1.5">
-        <p className="text-base font-medium">這場會議還沒處理完成</p>
+        <p className="text-base font-medium">這筆{NOTE_TYPE_LABELS[meeting.noteType]}還沒處理完成</p>
         <p className="text-sm text-muted">
           {meeting.fileName ?? meeting.title}・已完成 {progress.doneChunks.length} / {progress.totalChunks} 段
         </p>
