@@ -2,6 +2,7 @@ import { PipelineError, prepareMeeting, unexpectedErrorMessage } from "@/lib/chu
 import { getSessionUserId } from "@/lib/dal";
 import { toMeetingListItem, type MeetingListItem } from "@/lib/meeting-dto";
 import { connectDB } from "@/lib/mongodb";
+import { isNoteType } from "@/lib/upload-config";
 import { MeetingModel } from "@/models/Meeting";
 
 // 建立會議需要下載原始錄音、偵測靜音並切段，長錄音可能要一兩分鐘
@@ -81,15 +82,21 @@ export async function POST(request: Request) {
     return Response.json({ error: "請先登入" }, { status: 401 });
   }
 
-  const input = (await request.json().catch(() => null)) as { recordings?: unknown; attachments?: unknown } | null;
+  const input = (await request.json().catch(() => null)) as {
+    noteType?: unknown;
+    recordings?: unknown;
+    attachments?: unknown;
+  } | null;
+  const noteType = input?.noteType ?? "meeting";
   const recordings = input?.recordings;
   const attachments = input?.attachments ?? [];
-  if (!isFileList(recordings) || recordings.length === 0 || !isFileList(attachments)) {
+  if (!isNoteType(noteType) || !isFileList(recordings) || recordings.length === 0 || !isFileList(attachments)) {
     return Response.json({ error: "請求格式錯誤" }, { status: 400 });
   }
 
   try {
     const body: CreateMeetingResponse = await prepareMeeting(userId, {
+      noteType,
       recordings: recordings.map(trimFileName),
       attachments: attachments.map(trimFileName),
     });

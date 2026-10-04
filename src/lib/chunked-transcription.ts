@@ -15,7 +15,7 @@ import { BLOB_ACCESS, audioContentType, deleteBlobQuietly } from "@/lib/blob";
 import { clipAsDataUrl, concatAudio, detectSilences, encodeSegment, planChunks, probeDurationSeconds } from "@/lib/ffmpeg";
 import { toMeetingDetail, type MeetingDetail, type TranscriptSegment } from "@/lib/meeting-dto";
 import { connectDB } from "@/lib/mongodb";
-import { SUMMARY_MODEL, summarizeTranscript, type MeetingMinutes, type SummaryAttachment } from "@/lib/summarize";
+import { SUMMARY_MODEL, summarizeTranscript, type AiNotes, type SummaryAttachment } from "@/lib/summarize";
 import {
   ATTACHMENT_KIND_BY_EXT,
   MAX_ATTACHMENTS,
@@ -25,6 +25,7 @@ import {
   MAX_RECORDINGS,
   MAX_UPLOAD_BYTES,
   fileExtension,
+  type NoteType,
   userAttachmentPrefix,
   userAudioPrefix,
 } from "@/lib/upload-config";
@@ -163,7 +164,7 @@ async function verifyRecordings(userId: string, inputs: RecordingInput[]) {
 
 export async function prepareMeeting(
   userId: string,
-  input: { recordings: RecordingInput[]; attachments: AttachmentInput[] },
+  input: { noteType: NoteType; recordings: RecordingInput[]; attachments: AttachmentInput[] },
 ): Promise<{ meetingId: string; totalChunks: number; durationSeconds: number }> {
   // 檔案是瀏覽器直接傳到 Blob 的，網址由前端提供，必須確認真的是這位使用者上傳的
   const { metas, cleanup } = await verifyRecordings(userId, input.recordings);
@@ -271,6 +272,7 @@ export async function prepareMeeting(
         _id: meetingId,
         userId,
         title: names[0].replace(/\.[^.]+$/, "") || "未命名會議",
+        noteType: input.noteType,
         durationSeconds: duration,
         source: {
           kind: "upload",
@@ -448,6 +450,20 @@ function relabelUnmatched(segments: TranscriptSegment[]) {
   });
 }
 
+// AI 整理結果依紀錄類型存進對應的欄位
+function aiFields(result: AiNotes) {
+  if (result.type === "study") {
+    const { summary, sections, terms, examples } = result.notes;
+    return { summary, sections, terms, examples };
+  }
+  const { summary, keyPoints, actionItems } = result.minutes;
+  return {
+    summary,
+    keyPoints,
+    actionItems: actionItems.map((a) => ({ task: a.task, owner: a.owner ?? undefined, due: a.due ?? undefined })),
+  };
+}
+
 export async function finalizeMeeting(userId: string, meetingId: string): Promise<MeetingDetail> {
   await connectDB();
   const doc = await MeetingModel.findOne({ _id: meetingId, userId }).lean();
@@ -473,7 +489,7 @@ export async function finalizeMeeting(userId: string, meetingId: string): Promis
   const fullText = segments.map((s) => s.text).join("\n");
 
   // AI 整理失敗不影響逐字稿保存
-  let minutes: MeetingMinutes | null = null;
+  let result: AiNotes | null = null;
   let minutesError: string | undefined;
   if (fullText.trim()) {
     try {
@@ -488,7 +504,7 @@ export async function finalizeMeeting(userId: string, meetingId: string): Promis
           return { fileName: a.fileName, kind: type.kind, mime: type.mime, data: Buffer.from(data) };
         }),
       );
-      minutes = await summarizeTranscript(openaiClient(), fullText, segments, {
+      result = await summarizeTranscript(openaiClient(), doc.noteType ?? "meeting", fullText, segments, {
         attachments,
         recordings: doc.recordings ?? [],
       });
@@ -512,22 +528,10 @@ export async function finalizeMeeting(userId: string, meetingId: string): Promis
     { _id: meetingId, userId },
     {
       $set: {
-        title: minutes?.title || doc.title,
+        title: (result?.type === "study" ? result.notes.title : result?.minutes.title) || doc.title,
         transcript: { fullText, segments },
-        ...(minutes && {
-          ai: {
-            summary: minutes.summary,
-            keyPoints: minutes.keyPoints,
-            actionItems: minutes.actionItems.map((a) => ({
-              task: a.task,
-              owner: a.owner ?? undefined,
-              due: a.due ?? undefined,
-            })),
-            model: SUMMARY_MODEL,
-            generatedAt: new Date(),
-          },
-        }),
-        status: minutes ? "completed" : "transcribed",
+        ...(result && { ai: { ...aiFields(result), model: SUMMARY_MODEL, generatedAt: new Date() } }),
+        status: result ? "completed" : "transcribed",
         ...(minutesError && { errorMessage: minutesError }),
       },
       $unset: { processing: 1, ...(!minutesError && { errorMessage: 1 }) },

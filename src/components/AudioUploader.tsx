@@ -25,7 +25,10 @@ import {
   MAX_AUDIO_SECONDS,
   MAX_RECORDINGS,
   MAX_UPLOAD_BYTES,
+  NOTE_TYPES,
+  NOTE_TYPE_LABELS,
   fileExtension,
+  type NoteType,
 } from "@/lib/upload-config";
 
 const ACCEPT = `${AUDIO_EXTENSIONS.map((e) => `.${e}`).join(",")},audio/*`;
@@ -34,12 +37,39 @@ const MAX_FILE_MB = MAX_UPLOAD_BYTES / 1024 / 1024;
 const MAX_ATTACHMENT_MB = MAX_ATTACHMENT_BYTES / 1024 / 1024;
 const MAX_ATTACHMENTS_TOTAL_MB = MAX_ATTACHMENTS_TOTAL_BYTES / 1024 / 1024;
 const MAX_HOURS = MAX_AUDIO_SECONDS / 3600;
-const DELIVERABLES: { icon: IconName; title: string; desc: string }[] = [
-  { icon: "users", title: "分講者的逐字稿", desc: "附時間軸，點一下就能從那裡回放" },
-  { icon: "sparkles", title: "摘要與重點", desc: "三十秒掌握整場會議" },
-  { icon: "checkCircle", title: "待辦事項", desc: "整理出負責人與期限" },
-  { icon: "shield", title: "只有你看得到", desc: "錄音與紀錄只屬於你的帳號" },
-];
+type Deliverable = { icon: IconName; title: string; desc: string };
+
+const TRANSCRIPT_DELIVERABLE: Deliverable = {
+  icon: "users",
+  title: "分講者的逐字稿",
+  desc: "附時間軸，點一下就能從那裡回放",
+};
+const PRIVACY_DELIVERABLE: Deliverable = { icon: "shield", title: "只有你看得到", desc: "錄音與紀錄只屬於你的帳號" };
+
+// 兩種紀錄類型：選項說明與完成後拿到的內容
+const NOTE_TYPE_OPTIONS: Record<NoteType, { icon: IconName; hint: string; deliverables: Deliverable[] }> = {
+  meeting: {
+    icon: "users",
+    hint: "會議、討論、訪談",
+    deliverables: [
+      TRANSCRIPT_DELIVERABLE,
+      { icon: "sparkles", title: "摘要與重點", desc: "三十秒掌握整場會議" },
+      { icon: "checkCircle", title: "待辦事項", desc: "整理出負責人與期限" },
+      PRIVACY_DELIVERABLE,
+    ],
+  },
+  study: {
+    icon: "book",
+    hint: "上課、講座、讀書內容",
+    deliverables: [
+      TRANSCRIPT_DELIVERABLE,
+      { icon: "sparkles", title: "摘要", desc: "快速掌握這份內容在講什麼" },
+      { icon: "list", title: "重點概念", desc: "依主題分組，寫成能直接複習的筆記" },
+      { icon: "book", title: "名詞解釋與例子", desc: "關鍵術語的定義，加上講解中的例子" },
+      PRIVACY_DELIVERABLE,
+    ],
+  },
+};
 
 function formatSize(bytes: number) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
@@ -57,6 +87,7 @@ function useLeaveWarning(active: boolean) {
 
 export default function AudioUploader({ userId }: { userId: string }) {
   const router = useRouter();
+  const [noteType, setNoteType] = useState<NoteType>("meeting");
   const inputRef = useRef<HTMLInputElement>(null);
   // 依加入順序排列，伺服器會照這個順序把錄音接成同一場會議
   const [files, setFiles] = useState<File[]>([]);
@@ -72,6 +103,12 @@ export default function AudioUploader({ userId }: { userId: string }) {
   const [meetingId, setMeetingId] = useState<string | null>(null);
   const loading = stage !== null;
   useLeaveWarning(loading);
+
+  function selectNoteType(type: NoteType) {
+    setNoteType(type);
+    // 類型在建立紀錄時就決定了，換類型等於要建立新的一筆，不沿用先前失敗的紀錄
+    setMeetingId(null);
+  }
 
   // 錄音可以多選、分次加入，接在現有清單後面；不合格的檔案略過並提示，其餘照樣加入
   function addFiles(selected: File[]) {
@@ -202,7 +239,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
           setStage({ kind: "uploading", percent }),
         );
         setStage({ kind: "preparing" });
-        const created = await createMeeting(uploaded);
+        const created = await createMeeting(uploaded, noteType);
         id = created.meetingId;
         setMeetingId(id);
         progress = { totalChunks: created.totalChunks, doneChunks: [] };
@@ -232,7 +269,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
         <div className="flex flex-col gap-4 rounded-2xl border border-success/25 bg-success-soft p-4 print:hidden sm:flex-row sm:items-center sm:justify-between sm:p-5">
           <div className="flex items-start gap-3">
             <Icon name="checkCircle" className="mt-0.5 size-5 shrink-0 text-success" />
-            <p className="text-sm font-medium">會議記錄完成，已保存到歷史紀錄</p>
+            <p className="text-sm font-medium">{NOTE_TYPE_LABELS[result.noteType]}完成，已保存到歷史紀錄</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <button
@@ -260,6 +297,48 @@ export default function AudioUploader({ userId }: { userId: string }) {
         onSubmit={handleSubmit}
         className="flex flex-col gap-5 rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-6"
       >
+        {!loading && (
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-2 text-sm font-semibold">要整理成什麼？</legend>
+            <div className="grid grid-cols-2 gap-2 sm:gap-3">
+              {NOTE_TYPES.map((type) => {
+                const option = NOTE_TYPE_OPTIONS[type];
+                const selected = noteType === type;
+                return (
+                  <label
+                    key={type}
+                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border-2 p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent/40 sm:p-4 ${
+                      selected
+                        ? "border-accent bg-accent-soft"
+                        : "border-line bg-surface-2/50 hover:border-accent/40"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="noteType"
+                      value={type}
+                      checked={selected}
+                      onChange={() => selectNoteType(type)}
+                      className="sr-only"
+                    />
+                    <span
+                      className={`grid size-9 shrink-0 place-items-center rounded-xl ${
+                        selected ? "bg-accent text-accent-ink" : "bg-surface text-accent shadow-card"
+                      }`}
+                    >
+                      <Icon name={option.icon} className="size-[18px]" />
+                    </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="text-sm font-semibold">{NOTE_TYPE_LABELS[type]}</span>
+                      <span className="truncate text-xs text-muted">{option.hint}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+        )}
+
         {stage ? (
           <ProcessingStatus
             stage={stage}
@@ -460,7 +539,7 @@ export default function AudioUploader({ userId }: { userId: string }) {
       <aside className="flex flex-col gap-4 rounded-3xl border border-line bg-surface-2/50 p-5 sm:p-6">
         <h2 className="text-sm font-semibold">完成後你會拿到</h2>
         <ul className="flex flex-col gap-3.5 text-sm">
-          {DELIVERABLES.map((item) => (
+          {NOTE_TYPE_OPTIONS[noteType].deliverables.map((item) => (
             <li key={item.title} className="flex gap-3">
               <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface text-accent shadow-card">
                 <Icon name={item.icon} className="size-4" />

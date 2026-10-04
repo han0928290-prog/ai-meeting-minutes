@@ -15,9 +15,9 @@ import {
   WidthType,
 } from "docx";
 import type { MeetingDetail, TranscriptSegment } from "@/lib/meeting-dto";
-import type { MeetingMinutes } from "@/lib/summarize";
+import type { MeetingMinutes, StudyNotes } from "@/lib/summarize";
 
-// 會議的 Word 檔：會議記錄（摘要、重點、待辦）與逐字稿兩種
+// Word 檔：會議記錄（摘要、重點、待辦）、讀書筆記（摘要、重點概念、名詞、例子）與逐字稿
 
 // 中文用微軟正黑體，英數用 Calibri；沒有這些字型的電腦（例如 Mac）Word 會自動替換
 const FONT = { ascii: "Calibri", hAnsi: "Calibri", eastAsia: "Microsoft JhengHei", cs: "Calibri" };
@@ -135,6 +135,10 @@ function createDocument(title: string, children: (Paragraph | Table)[]) {
             border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: LINE, space: 4 } },
           },
         },
+        heading2: {
+          run: { font: FONT, size: 24, bold: true, color: INK },
+          paragraph: { spacing: { before: 240, after: 80 } },
+        },
       },
     },
     numbering: {
@@ -146,6 +150,18 @@ function createDocument(title: string, children: (Paragraph | Table)[]) {
               level: 0,
               format: LevelFormat.DECIMAL,
               text: "%1.",
+              alignment: AlignmentType.START,
+              style: { paragraph: { indent: { left: 440, hanging: 360 } } },
+            },
+          ],
+        },
+        {
+          reference: "bullets",
+          levels: [
+            {
+              level: 0,
+              format: LevelFormat.BULLET,
+              text: "•",
               alignment: AlignmentType.START,
               style: { paragraph: { indent: { left: 440, hanging: 360 } } },
             },
@@ -183,6 +199,46 @@ export async function buildMeetingDocx(meeting: MeetingDetail, minutes: MeetingM
       : [new Paragraph({ children: [new TextRun({ text: "會議中沒有提到待辦事項", color: MUTED })] })]),
 
     footnote("本會議記錄由 AI 根據錄音自動整理，重要內容請與原始錄音核對。"),
+  ]);
+  return Packer.toBuffer(doc);
+}
+
+function heading2(text: string) {
+  return new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(text)] });
+}
+
+function bullet(children: TextRun[]) {
+  return new Paragraph({ numbering: { reference: "bullets", level: 0 }, children });
+}
+
+function emptyNote(text: string) {
+  return new Paragraph({ children: [new TextRun({ text, color: MUTED })] });
+}
+
+/** 讀書筆記：標題、資訊、摘要、重點概念（依主題分組）、名詞解釋、例子與補充（不含逐字稿） */
+export async function buildStudyDocx(meeting: MeetingDetail, notes: StudyNotes): Promise<Buffer> {
+  const doc = createDocument(meeting.title, [
+    metaLine(meeting),
+
+    heading("摘要"),
+    new Paragraph({ children: [new TextRun(notes.summary)] }),
+
+    heading("重點概念"),
+    ...(notes.sections.length > 0
+      ? notes.sections.flatMap((s) => [heading2(s.heading), ...s.points.map((p) => bullet([new TextRun(p)]))])
+      : [emptyNote("沒有整理出重點概念")]),
+
+    heading("名詞解釋"),
+    ...(notes.terms.length > 0
+      ? notes.terms.map((t) => bullet([new TextRun({ text: `${t.term}：`, bold: true }), new TextRun(t.definition)]))
+      : [emptyNote("沒有需要解釋的名詞")]),
+
+    heading("例子與補充"),
+    ...(notes.examples.length > 0
+      ? notes.examples.map((e) => bullet([new TextRun(e)]))
+      : [emptyNote("內容中沒有提到例子")]),
+
+    footnote("本筆記由 AI 根據錄音自動整理，重要內容請與原始錄音或講義核對。"),
   ]);
   return Packer.toBuffer(doc);
 }

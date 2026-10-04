@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type { ResponseInputContent } from "openai/resources/responses/responses";
 import { recordingStarts, type RecordingPart } from "@/lib/meeting-dto";
+import type { NoteType } from "@/lib/upload-config";
 
 export const SUMMARY_MODEL = process.env.OPENAI_SUMMARY_MODEL || "gpt-5.5";
 
@@ -17,6 +18,20 @@ export type MeetingMinutes = {
   actionItems: ActionItem[];
 };
 
+export type NoteSection = { heading: string; points: string[] };
+export type Term = { term: string; definition: string };
+
+export type StudyNotes = {
+  title: string;
+  summary: string;
+  sections: NoteSection[]; // 重點概念，依主題分組
+  terms: Term[]; // 名詞解釋
+  examples: string[]; // 例子與補充
+};
+
+/** AI 整理結果，依紀錄類型而不同 */
+export type AiNotes = { type: "meeting"; minutes: MeetingMinutes } | { type: "study"; notes: StudyNotes };
+
 type TranscriptLine = { speaker: string; startMs: number; text: string };
 
 /** 補充資料：已從 Blob 下載，依類型轉成模型看得懂的輸入 */
@@ -30,7 +45,9 @@ export type SummaryAttachment = {
 // 單一文字檔放進提示的上限，避免超長檔案吃掉整個 context
 const MAX_TEXT_ATTACHMENT_CHARS = 100_000;
 
-const INSTRUCTIONS = `你是專業的會議記錄整理助理。根據使用者提供的會議逐字稿，整理出：
+// ---------- 會議記錄 ----------
+
+const MEETING_INSTRUCTIONS = `你是專業的會議記錄整理助理。根據使用者提供的會議逐字稿，整理出：
 0. title：20 字以內的會議標題，點出會議主題（例如「產品週會：新版上線時程與行銷預算」）。
 1. summary：3–6 句的會議摘要，說明會議目的、主要討論內容與結論。
 2. keyPoints：會議重點條列，每點一句話，涵蓋重要資訊、決議與數字。
@@ -52,7 +69,7 @@ const INSTRUCTIONS = `你是專業的會議記錄整理助理。根據使用者�
 - 逐字稿與補充資料衝突時，以會議中的口頭結論為準。`;
 
 // Structured Outputs：強制模型回傳符合這個 schema 的 JSON
-const MINUTES_SCHEMA = {
+const MEETING_SCHEMA = {
   type: "object",
   properties: {
     title: { type: "string" },
@@ -75,6 +92,74 @@ const MINUTES_SCHEMA = {
   required: ["title", "summary", "keyPoints", "actionItems"],
   additionalProperties: false,
 };
+
+// ---------- 讀書筆記 ----------
+
+const STUDY_INSTRUCTIONS = `你是專業的讀書筆記整理助理。使用者提供的是課程、講座或讀書內容的錄音逐字稿，請整理成方便複習的筆記：
+0. title：20 字以內的標題，點出這份內容的主題（例如「個體經濟學：邊際效用與需求曲線」）。
+1. summary：3–6 句的摘要，說明這份內容在講什麼、核心觀念與結論。
+2. sections：重點概念，依主題或段落分成 2–8 組，順序跟內容的講解順序一致。
+   - heading：這組的主題名稱，簡短明確。
+   - points：2–6 點，每點用一到兩句完整說明一個觀念，要能單獨看懂，不要只寫關鍵字。
+3. terms：關鍵名詞解釋。
+   - term：名詞（有英文原文時附上，例如「機會成本（Opportunity Cost）」）。
+   - definition：一到兩句的定義，以講解內容為準；講解中沒有明確定義時，依上下文簡要說明。
+   - 沒有值得解釋的名詞就回傳空陣列。
+4. examples：講解中提到的例子、案例、比喻或補充說明，每點一句話並點出它在說明哪個觀念。沒有就回傳空陣列。
+
+規則：
+- 一律使用台灣繁體中文。
+- 寫成可以直接拿來複習的筆記，不要寫「講者提到」「老師說」這類轉述口吻。
+- 只根據提供的內容整理，不要加入內容中沒有的知識。
+- 逐字稿為語音辨識結果，可能有錯字或斷句不自然，請依上下文理解；專有名詞拼錯時改成正確寫法。
+- 逐字稿中閒聊、點名、課務宣布等與學習內容無關的部分不要寫進筆記。
+
+若有附上補充資料（講義、課本、簡報、板書照片）：
+- 補充資料是重要的內容來源，和錄音互相補充：用來校正名詞、公式與數字，並把講義上與講解相關的重點整合進筆記。
+- 講義中有、但錄音中沒講到的重要內容，可以簡短收錄並在句末標註「（講義）」。
+- 錄音與講義衝突時，以錄音中的講解為準。`;
+
+const STUDY_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    summary: { type: "string" },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          heading: { type: "string" },
+          points: { type: "array", items: { type: "string" } },
+        },
+        required: ["heading", "points"],
+        additionalProperties: false,
+      },
+    },
+    terms: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          term: { type: "string" },
+          definition: { type: "string" },
+        },
+        required: ["term", "definition"],
+        additionalProperties: false,
+      },
+    },
+    examples: { type: "array", items: { type: "string" } },
+  },
+  required: ["title", "summary", "sections", "terms", "examples"],
+  additionalProperties: false,
+};
+
+const BY_TYPE = {
+  meeting: { instructions: MEETING_INSTRUCTIONS, schema: MEETING_SCHEMA, schemaName: "meeting_minutes", noun: "會議" },
+  study: { instructions: STUDY_INSTRUCTIONS, schema: STUDY_SCHEMA, schemaName: "study_notes", noun: "課程／讀書內容" },
+} satisfies Record<NoteType, unknown>;
+
+// ---------- 共用：組合交給模型的輸入 ----------
 
 function formatTimestamp(ms: number) {
   const total = Math.floor(ms / 1000);
@@ -123,19 +208,21 @@ function attachmentContent(a: SummaryAttachment): ResponseInputContent[] {
 
 export async function summarizeTranscript(
   openai: OpenAI,
+  type: NoteType,
   fullText: string,
   segments: TranscriptLine[],
   { attachments = [], recordings = [] }: { attachments?: SummaryAttachment[]; recordings?: RecordingPart[] } = {},
-): Promise<MeetingMinutes> {
+): Promise<AiNotes> {
+  const config = BY_TYPE[type];
   const intro =
     recordings.length > 1
-      ? `以下是會議逐字稿，由 ${recordings.length} 個錄音檔依順序接續而成，屬於同一場會議：`
-      : "以下是會議逐字稿：";
+      ? `以下是${config.noun}的逐字稿，由 ${recordings.length} 個錄音檔依順序接續而成，屬於同一份內容：`
+      : `以下是${config.noun}的逐字稿：`;
   const transcriptText = `${intro}\n\n${formatTranscript(fullText, segments, recordings)}`;
   const response = await openai.responses.create({
     model: SUMMARY_MODEL,
     reasoning: { effort: "low" },
-    instructions: INSTRUCTIONS,
+    instructions: config.instructions,
     input:
       attachments.length === 0
         ? transcriptText
@@ -144,7 +231,7 @@ export async function summarizeTranscript(
               role: "user",
               content: [
                 { type: "input_text", text: transcriptText },
-                { type: "input_text", text: `以下是會議的補充資料，共 ${attachments.length} 份：` },
+                { type: "input_text", text: `以下是補充資料，共 ${attachments.length} 份：` },
                 ...attachments.flatMap(attachmentContent),
               ],
             },
@@ -152,8 +239,8 @@ export async function summarizeTranscript(
     text: {
       format: {
         type: "json_schema",
-        name: "meeting_minutes",
-        schema: MINUTES_SCHEMA,
+        name: config.schemaName,
+        schema: config.schema,
         strict: true,
       },
     },
@@ -163,5 +250,8 @@ export async function summarizeTranscript(
     throw new Error(`模型沒有完成整理（status: ${response.status}）`);
   }
 
-  return JSON.parse(response.output_text) as MeetingMinutes;
+  const parsed: unknown = JSON.parse(response.output_text);
+  return type === "study"
+    ? { type, notes: parsed as StudyNotes }
+    : { type, minutes: parsed as MeetingMinutes };
 }

@@ -10,6 +10,7 @@ import {
   AUDIO_MIME_BY_EXT,
   BLOB_ACCESS,
   fileExtension,
+  type NoteType,
   userAttachmentPrefix,
   userAudioPrefix,
 } from "@/lib/upload-config";
@@ -145,9 +146,9 @@ export async function uploadFiles(
   };
 }
 
-export function createMeeting(uploaded: UploadedFiles) {
-  const step = uploaded.recordings.length > 1 ? "建立會議（合併、分析與切割錄音）" : "建立會議（分析與切割錄音）";
-  return postJson<CreateMeetingResponse>(step, "/api/meetings", uploaded);
+export function createMeeting(uploaded: UploadedFiles, noteType: NoteType) {
+  const step = uploaded.recordings.length > 1 ? "建立紀錄（合併、分析與切割錄音）" : "建立紀錄（分析與切割錄音）";
+  return postJson<CreateMeetingResponse>(step, "/api/meetings", { ...uploaded, noteType });
 }
 
 /** 轉錄尚未完成的各段並整理，回傳完成的會議紀錄 */

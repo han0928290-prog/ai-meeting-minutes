@@ -61,3 +61,17 @@ export const MAX_ATTACHMENTS_TOTAL_BYTES = 50 * 1024 * 1024;
 export function userAttachmentPrefix(userId: string) {
   return `${userAudioPrefix(userId)}attachments/`;
 }
+
+// ---------- 紀錄類型：決定 AI 整理的方式與輸出格式 ----------
+
+export const NOTE_TYPES = ["meeting", "study"] as const;
+export type NoteType = (typeof NOTE_TYPES)[number];
+
+export const NOTE_TYPE_LABELS: Record<NoteType, string> = {
+  meeting: "會議記錄",
+  study: "讀書筆記",
+};
+
+export function isNoteType(value: unknown): value is NoteType {
+  return typeof value === "string" && (NOTE_TYPES as readonly string[]).includes(value);
+}

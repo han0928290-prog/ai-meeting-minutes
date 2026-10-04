@@ -1,6 +1,7 @@
 import type { Types } from "mongoose";
 import type { Meeting, MeetingStatus } from "@/models/Meeting";
-import type { MeetingMinutes } from "@/lib/summarize";
+import type { MeetingMinutes, StudyNotes } from "@/lib/summarize";
+import type { NoteType } from "@/lib/upload-config";
 
 // API 回傳給前端的會議資料格式。刻意不包含 userId 與 Blob 原始網址
 
@@ -31,6 +32,7 @@ export function recordingStarts(segments: { startMs: number }[], recordings: Rec
 export type MeetingListItem = {
   id: string;
   title: string;
+  noteType: NoteType;
   meetingDate: string;
   durationSeconds: number | null;
   status: MeetingStatus;
@@ -42,6 +44,7 @@ export type MeetingListItem = {
 export type MeetingDetail = {
   id: string;
   title: string;
+  noteType: NoteType;
   meetingDate: string;
   durationSeconds: number | null;
   status: MeetingStatus;
@@ -50,7 +53,9 @@ export type MeetingDetail = {
   recordings: RecordingPart[] | null;
   audioUrl: string | null; // 本站 API 路徑，會驗證擁有者後才串流錄音檔
   transcript: { text: string; segments: TranscriptSegment[] };
+  // AI 整理結果：會議記錄填 minutes、讀書筆記填 notes，另一個是 null
   minutes: MeetingMinutes | null;
+  notes: StudyNotes | null;
   errorMessage: string | null;
   // 分段轉錄尚未完成時才有值，前端用來顯示進度與續跑
   progress: { totalChunks: number; doneChunks: number[] } | null;
@@ -67,6 +72,7 @@ export function toMeetingListItem(doc: MeetingDoc): MeetingListItem {
   return {
     id,
     title: doc.title,
+    noteType: doc.noteType ?? "meeting",
     meetingDate: new Date(doc.meetingDate ?? doc.createdAt).toISOString(),
     durationSeconds: doc.durationSeconds ?? null,
     status: doc.status,
@@ -79,9 +85,11 @@ export function toMeetingListItem(doc: MeetingDoc): MeetingListItem {
 export function toMeetingDetail(doc: MeetingDoc): MeetingDetail {
   const id = String(doc._id);
   const ai = doc.ai;
+  const noteType = doc.noteType ?? "meeting";
   return {
     id,
     title: doc.title,
+    noteType,
     meetingDate: new Date(doc.meetingDate ?? doc.createdAt).toISOString(),
     durationSeconds: doc.durationSeconds ?? null,
     status: doc.status,
@@ -97,8 +105,18 @@ export function toMeetingDetail(doc: MeetingDoc): MeetingDetail {
         text: s.text,
       })),
     },
+    notes:
+      noteType === "study" && ai?.summary != null
+        ? {
+            title: doc.title,
+            summary: ai.summary,
+            sections: (ai.sections ?? []).map((s) => ({ heading: s.heading, points: s.points ?? [] })),
+            terms: (ai.terms ?? []).map((t) => ({ term: t.term, definition: t.definition })),
+            examples: ai.examples ?? [],
+          }
+        : null,
     minutes:
-      ai?.summary != null
+      noteType === "meeting" && ai?.summary != null
         ? {
             title: doc.title,
             summary: ai.summary,

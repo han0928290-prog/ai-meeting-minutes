@@ -1,11 +1,11 @@
 import { isValidObjectId } from "mongoose";
 import { getSessionUserId } from "@/lib/dal";
 import { toMeetingDetail } from "@/lib/meeting-dto";
-import { buildMeetingDocx, buildTranscriptDocx, docxFileName } from "@/lib/meeting-docx";
+import { buildMeetingDocx, buildStudyDocx, buildTranscriptDocx, docxFileName } from "@/lib/meeting-docx";
 import { connectDB } from "@/lib/mongodb";
 import { MeetingModel } from "@/models/Meeting";
 
-// GET /api/meetings/:id/docx                     — 會議記錄（標題、摘要、重點、待辦；不含逐字稿）
+// GET /api/meetings/:id/docx                     — 會議記錄或讀書筆記（依紀錄類型；不含逐字稿）
 // GET /api/meetings/:id/docx?content=transcript  — 逐字稿
 export async function GET(request: Request, ctx: RouteContext<"/api/meetings/[id]/docx">) {
   const userId = await getSessionUserId();
@@ -39,12 +39,14 @@ export async function GET(request: Request, ctx: RouteContext<"/api/meetings/[id
     }
     buffer = await buildTranscriptDocx(meeting);
     fileName = docxFileName(`${meeting.title}－逐字稿`);
-  } else {
-    if (!meeting.minutes) {
-      return Response.json({ error: "這場會議還沒有 AI 整理結果，無法匯出" }, { status: 409 });
-    }
+  } else if (meeting.notes) {
+    buffer = await buildStudyDocx(meeting, meeting.notes);
+    fileName = docxFileName(meeting.title);
+  } else if (meeting.minutes) {
     buffer = await buildMeetingDocx(meeting, meeting.minutes);
     fileName = docxFileName(meeting.title);
+  } else {
+    return Response.json({ error: "這筆紀錄還沒有 AI 整理結果，無法匯出" }, { status: 409 });
   }
 
   return new Response(new Uint8Array(buffer), {

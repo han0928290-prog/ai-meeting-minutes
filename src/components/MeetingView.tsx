@@ -3,6 +3,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Icon, buttonStyles, type IconName } from "@/components/ui";
 import { recordingStarts, type MeetingDetail } from "@/lib/meeting-dto";
+import type { StudyNotes } from "@/lib/summarize";
+import { NOTE_TYPE_LABELS } from "@/lib/upload-config";
 
 // 講者配色：avatar 底色 + 文字色，亮暗模式都清楚
 const SPEAKER_STYLES = [
@@ -75,10 +77,93 @@ function MetaChip({ icon, children }: { icon: IconName; children: React.ReactNod
   );
 }
 
+// 讀書筆記：摘要、重點概念（依主題分組）、例子與補充在左欄，名詞解釋在右欄方便對照
+function StudyNotesView({ notes }: { notes: StudyNotes }) {
+  return (
+    <>
+      <Card title="摘要" icon="sparkles" className="[grid-area:summary]">
+        <p className="text-[15px] leading-[1.9] text-pretty">{notes.summary}</p>
+      </Card>
+
+      <div className="min-w-0 [grid-area:actions]">
+        <Card
+          title="名詞解釋"
+          icon="book"
+          className="lg:sticky lg:top-24 print:static"
+          aside={
+            notes.terms.length > 0 && (
+              <span className="rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-semibold text-accent">
+                {notes.terms.length}
+              </span>
+            )
+          }
+        >
+          {notes.terms.length > 0 ? (
+            <dl className="flex flex-col gap-2.5">
+              {notes.terms.map((t, i) => (
+                <div key={i} className="flex flex-col gap-1 rounded-2xl bg-surface-2/70 p-3.5 break-inside-avoid">
+                  <dt className="text-sm font-semibold">{t.term}</dt>
+                  <dd className="text-sm leading-relaxed text-muted">{t.definition}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="text-sm text-muted">沒有需要解釋的名詞</p>
+          )}
+        </Card>
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-5 [grid-area:points] lg:gap-6 print:gap-4">
+        <Card title="重點概念" icon="list">
+          {notes.sections.length > 0 ? (
+            <ol className="flex flex-col gap-5">
+              {notes.sections.map((s, i) => (
+                <li key={i} className="flex flex-col gap-2.5">
+                  <h3 className="flex items-baseline gap-3 font-semibold break-after-avoid">
+                    <span className="w-6 shrink-0 font-mono text-sm text-accent tabular-nums">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="min-w-0">{s.heading}</span>
+                  </h3>
+                  <ul className="flex flex-col gap-2 pl-9">
+                    {s.points.map((p, j) => (
+                      <li key={j} className="flex gap-2.5 text-[15px] leading-relaxed break-inside-avoid">
+                        <span className="mt-[11px] size-1.5 shrink-0 rounded-full bg-accent/60" />
+                        <span className="min-w-0">{p}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="text-sm text-muted">沒有整理出重點概念</p>
+          )}
+        </Card>
+
+        {notes.examples.length > 0 && (
+          <Card title="例子與補充" icon="quote">
+            <ul className="flex flex-col gap-2.5">
+              {notes.examples.map((e, i) => (
+                <li key={i} className="flex gap-2.5 text-[15px] leading-relaxed break-inside-avoid">
+                  <span className="mt-[11px] size-1.5 shrink-0 rounded-full bg-accent/60" />
+                  <span className="min-w-0">{e}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
+      </div>
+    </>
+  );
+}
+
 export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [expanded, setExpanded] = useState(false);
-  const { minutes } = meeting;
+  const { minutes, notes } = meeting;
+  const hasResult = Boolean(minutes || notes);
+  const typeLabel = NOTE_TYPE_LABELS[meeting.noteType];
   const { segments, text } = meeting.transcript;
   const speakers = [...new Set(segments.map((s) => s.speaker))];
   const hasTranscript = segments.length > 0 || text.trim().length > 0;
@@ -123,28 +208,28 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
           <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance sm:text-3xl">
             {meeting.title}
           </h1>
-          {(minutes || hasTranscript) && (
+          {(hasResult || hasTranscript) && (
             <div className="flex shrink-0 flex-wrap gap-2 print:hidden">
-              {minutes && (
+              {hasResult && (
                 <button
                   type="button"
                   onClick={() => window.print()}
-                  title="列印會議記錄（不含逐字稿），或在列印視窗選「另存為 PDF」"
+                  title={`列印${typeLabel}（不含逐字稿），或在列印視窗選「另存為 PDF」`}
                   className={`${buttonStyles.secondary} ${buttonStyles.sm} flex-1 sm:flex-none`}
                 >
                   <Icon name="printer" className="size-4" />
                   列印／存成 PDF
                 </button>
               )}
-              {minutes && (
+              {hasResult && (
                 <a
                   href={`/api/meetings/${meeting.id}/docx`}
                   download
-                  title="下載 Word 檔：摘要、重點、待辦事項"
+                  title={notes ? "下載 Word 檔：摘要、重點概念、名詞解釋、例子" : "下載 Word 檔：摘要、重點、待辦事項"}
                   className={`${buttonStyles.secondary} ${buttonStyles.sm} flex-1 sm:flex-none`}
                 >
                   <Icon name="download" className="size-4" />
-                  下載會議記錄
+                  下載{typeLabel}
                 </a>
               )}
               {hasTranscript && (
@@ -162,6 +247,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
           )}
         </div>
         <div className="flex flex-wrap gap-2">
+          <MetaChip icon={meeting.noteType === "study" ? "book" : "users"}>{typeLabel}</MetaChip>
           <MetaChip icon="calendar">{formatDate(meeting.meetingDate)}</MetaChip>
           {meeting.durationSeconds != null && (
             <MetaChip icon="clock">{formatTime(meeting.durationSeconds * 1000)}</MetaChip>
@@ -184,7 +270,7 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
             <div className="flex flex-col gap-3 rounded-3xl border border-line bg-surface p-4 shadow-card sm:p-5">
               <p className="flex items-center gap-2 text-sm font-medium">
                 <Icon name="play" className="size-4 text-accent" />
-                會議錄音
+                錄音
               </p>
               <audio ref={audioRef} controls preload="metadata" src={meeting.audioUrl} className="h-10 w-full" />
               {segments.length > 0 && (
@@ -193,12 +279,14 @@ export default function MeetingView({ meeting }: { meeting: MeetingDetail }) {
             </div>
           ) : (
             <p className="rounded-3xl border border-dashed border-line-strong p-4 text-sm text-muted">
-              這場會議沒有保存錄音檔
+              沒有保存錄音檔
             </p>
           )}
         </div>
 
-        {minutes ? (
+        {notes ? (
+          <StudyNotesView notes={notes} />
+        ) : minutes ? (
           <>
             <Card title="摘要" icon="sparkles" className="[grid-area:summary]">
               <p className="text-[15px] leading-[1.9] text-pretty">{minutes.summary}</p>

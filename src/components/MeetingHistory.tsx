@@ -7,6 +7,7 @@ import type { MeetingListResponse } from "@/app/api/meetings/route";
 import { formatTime } from "@/components/MeetingView";
 import { Icon, buttonStyles } from "@/components/ui";
 import { ApiError, requestJson } from "@/lib/meeting-pipeline";
+import { NOTE_TYPE_LABELS } from "@/lib/upload-config";
 
 function DateBlock({ iso }: { iso: string }) {
   const d = new Date(iso);
@@ -73,8 +74,8 @@ export default function MeetingHistory() {
           <Icon name="mic" className="size-6" />
         </span>
         <div className="flex flex-col gap-1.5">
-          <p className="text-base font-medium">還沒有會議紀錄</p>
-          <p className="text-sm text-muted">上傳第一場會議錄音，幾分鐘後就會出現在這裡。</p>
+          <p className="text-base font-medium">還沒有任何紀錄</p>
+          <p className="text-sm text-muted">上傳第一份會議或課程錄音，幾分鐘後就會出現在這裡。</p>
         </div>
         <Link href="/new" className={`${buttonStyles.primary} ${buttonStyles.md}`}>
           <Icon name="upload" className="size-4" />
@@ -88,7 +89,7 @@ export default function MeetingHistory() {
 
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-sm text-muted">共 {data.total} 場會議</p>
+      <p className="text-sm text-muted">共 {data.total} 筆紀錄</p>
       <ul className="flex flex-col gap-3">
         {data.meetings.map((m) => (
           <li key={m.id}>
@@ -106,6 +107,12 @@ export default function MeetingHistory() {
                   />
                 </span>
                 <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                  {m.noteType === "study" && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 font-medium text-accent">
+                      <Icon name="book" className="size-3" />
+                      {NOTE_TYPE_LABELS.study}
+                    </span>
+                  )}
                   <span>
                     {new Date(m.meetingDate).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })}
                   </span>

@@ -12,11 +12,11 @@ export default async function MeetingsPage() {
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-3">
           <Eyebrow>歷史紀錄</Eyebrow>
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">你的會議</h1>
+          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">你的紀錄</h1>
         </div>
         <Link href="/new" className={`${buttonStyles.dark} ${buttonStyles.md} w-full sm:w-auto`}>
           <Icon name="plus" className="size-4" />
-          新增會議
+          新增紀錄
         </Link>
       </header>
       <MeetingHistory />

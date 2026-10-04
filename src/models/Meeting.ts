@@ -1,4 +1,5 @@
 import { Schema, deleteModel, model, models, type InferSchemaType, type Model } from "mongoose";
+import { NOTE_TYPES } from "@/lib/upload-config";
 
 export const MEETING_STATUSES = [
   "draft", // 剛建立，還沒有逐字稿
@@ -30,11 +31,33 @@ const ActionItemSchema = new Schema(
   { _id: true },
 );
 
-// AI 整理結果，逐字稿完成後才會填入
+// 讀書筆記：依主題分組的重點概念
+const NoteSectionSchema = new Schema(
+  {
+    heading: { type: String, required: true, trim: true },
+    points: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
+// 讀書筆記：名詞解釋
+const TermSchema = new Schema(
+  {
+    term: { type: String, required: true, trim: true },
+    definition: { type: String, required: true, trim: true },
+  },
+  { _id: false },
+);
+
+// AI 整理結果，逐字稿完成後才會填入。
+// 會議記錄用 summary / keyPoints / actionItems；讀書筆記用 summary / sections / terms / examples
 const AiResultSchema = new Schema(
   {
     summary: { type: String },
     keyPoints: { type: [String], default: undefined },
+    sections: { type: [NoteSectionSchema], default: undefined },
+    terms: { type: [TermSchema], default: undefined },
+    examples: { type: [String], default: undefined },
     decisions: { type: [String], default: undefined },
     actionItems: { type: [ActionItemSchema], default: undefined },
     topics: { type: [String], default: undefined },
@@ -104,6 +127,8 @@ const MeetingSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
     title: { type: String, required: true, trim: true, maxlength: 200 },
+    // 紀錄類型：會議記錄或讀書筆記，決定 AI 整理的方式。舊資料沒有這個欄位，視為會議記錄
+    noteType: { type: String, enum: NOTE_TYPES, default: "meeting" },
     meetingDate: { type: Date, default: Date.now },
     durationSeconds: { type: Number, min: 0 },
     participants: { type: [String], default: [] },
